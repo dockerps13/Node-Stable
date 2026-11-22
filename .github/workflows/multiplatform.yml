@@ -1,4 +1,5 @@
 name: Multi-platform build validation
+# Vendored AnyTLS dependency required and now tracked in repository
 on:
   push:
     branches: [main]
