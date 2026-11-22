@@ -1,66 +1,26 @@
 # Changelog
 
-## V1.0.3 (2026-11-22)
+Release artifacts, source SHAs and checksums: [Node-Stable Releases](https://github.com/dockerps13/Node-Stable/releases). This file describes the maintained **Node-Stable** distribution; historical candidate documents are preserved in Git history, not published as current guidance.
 
-- Enable optional same-port TCP connect latency probes **by default on panel-managed machine-mode Hysteria2 and TUIC nodes**. No manual `kernel.tcp_probe: true` change is needed after a verified binary upgrade or a new machine-mode installation. Keep UDP/QUIC serving as before.
-- Respect explicit `kernel.tcp_probe: false` for opting out; multi-instance configs inherit the top-level setting unless explicitly overridden. Standalone and single-node modes retain their previous opt-in behavior.
-- Add Hysteria2/TUIC QUIC handshake and client/server roundtrip CI with `with_quic` build tags, and same-port TCP/UDP coexistence regression coverage.
-- Reduce repeated TLS certificate outage warnings and report the node ID/protocol/domain/certificate mode, with nil-config-safe diagnostics. No CA rate limits are bypassed.
-- TCP Ping measures **TCP connection establishment only**; it is not Hysteria2/TUIC authentication, HTTP URL delay, or true QUIC RTT. Inbound TCP ports must also be allowed by cloud security groups for external TCP Ping.
-- Keep existing XBoard production databases and panel settings unchanged. Roll out using verified backups and check listening ports and both TCP/UDP reachability.
+## v1.0.3 — 2026-11-22 (stable)
 
+- **Machine mode:** automatically expose same-port TCP handshake latency probes for running Hysteria2 and TUIC UDP/QUIC nodes when `kernel.tcp_probe` is omitted. An explicit `false` disables the probe; single-node and standalone modes remain opt-in.
+- Add QUIC client/server protocol roundtrip tests, same-port TCP/UDP coexistence tests, machine-mode config inheritance/opt-out tests and GitHub Actions regression checks.
+- Improve TLS missing-certificate logging with node ID, protocol, certificate mode/domain and failure state; avoid repeated identical warnings and guard missing config references.
+- Preserve the ACME per-domain HTTP 429 cooldown and certificate validity checks. A missing certificate cannot be bypassed by the TCP probe.
+- **Reminder:** TCPing is TCP connect RTT, not authenticated Hysteria2/TUIC QUIC delay. Real UDP and TCP probe ports require separate network/cloud firewall permissions.
 
-## V1.0.2 (release candidate — NOT STABLE)
+Linux amd64/arm64 binaries, `xbctl`, installer, `SOURCE_COMMIT` and `SHA256SUMS` are published together. Panel integration experiments are not included as a validated Laravel production upgrade.
 
-This version remains under final release acceptance. No stable tag or release
-may be published until the release gates in
-[docs/release-v1.0.2-acceptance.md](docs/release-v1.0.2-acceptance.md) pass for
-one pinned commit.
+## v1.0.2 — 2026-11-22 (stable)
 
-- Add opt-in `kernel.tcp_probe: true` for Hysteria2/TUIC UDP nodes. It
-  offers a bare TCP handshake on the corresponding port to support clients
-  using direct TCP port checks. It is off by default, is not QUIC RTT, and
-  does not change UDP proxy handling.
-- Add lifecycle and port conflict regression tests for the TCP listener.
-- Add event-triggered device snapshot updates for Xray and Sing-box over the existing WebSocket transport, with 350ms coalescing. Normal traffic billing and its report interval remain unchanged. Panel-side event handling/browser refresh must be independently verified.
-- Bind Laravel idempotent billing accept/recovery/job dispatches to an isolated Redis queue connection `redis_idempotent` with staging-only 240-second retry_after and 210-second Horizon timeout guidance; legacy production Redis retry_after=90 remains untouched. Added source contract tests for queue wiring.
-- Route optional Laravel idempotent ledger jobs to a dedicated `idempotent_traffic` queue; production `traffic_fetch` Horizon workers have a 30-second timeout, incompatible with a 180-second atomic ledger job. Deployment remains disabled pending dedicated-worker and database acceptance.
-- Add overflow-checked raw and rate-adjusted billing counters for the optional Laravel idempotent integration, with isolated PHP boundary tests. This integration is not deployed or enabled on the live panel.
-- Add concurrent multi-node HTTP billing replay regression: separate journals with lost ACKs replay the original report IDs and an idempotent test ledger charges each node exactly once. Actual XBoard panel acceptance is still required.
-- Fix Xray SOCKS5+TLS and HTTP user traffic accounting: Xray binds user statistics to the authenticated login (UUID), rather than the node's synthetic user@ID key. Add counter identity regression tests. Historical unreported traffic is not automatically back-billed.
-- Preserve the existing protocol, limiter, traffic journal, installer and
-  kernel regression suites from the development baseline.
+- Introduced **opt-in** `kernel.tcp_probe: true` for Hysteria2 and TUIC TCP-only connection checks; UDP/QUIC operation was unchanged.
+- Added lifecycle and port-conflict regression coverage for the TCP listener.
+- Added fast WebSocket connection/device snapshot updates with fallback reporting.
+- Improved Xray SOCKS5+TLS/HTTP traffic counter association, device admission within a machine, report journaling and protocol compatibility tests.
+- Continued certificate manager reliability work, installer verification and backup/rollback coverage.
+- Included opt-in, **not production-deployed**, XBoard Laravel/Redis examples for global device snapshots and idempotent billing. Their end-to-end deployment and cross-machine semantics still require separate acceptance.
 
-Pending release blockers: on-host acceptance of the built-in TCP probe after
-removing the temporary `socat` listeners; real panel billing and offline
-device/online count recovery; explicit scope decision about strict
-cross-node admission; upgrade/rollback and representative soak evidence.
+## Historical provenance
 
-## V1.0.1 (published 2026-11-20)
-
-GitHub Release v1.0.1 was published on 2026-11-20. The notes below describe
-its development work; v1.0.2 remains a separate unreleased candidate.
-
-- Share ACME account and certificate storage across ordinary `nodes:` instances,
-  with migration, file locking, retry/backoff, renewal reload, validation, and
-  fail-closed recovery coverage.
-- Preserve AnyTLS authentication and hot-update behavior, including the local
-  race-safe fork and wrong-password/deleted-user regression coverage.
-- Keep HTTP/HTTPS, Naive, SOCKS-over-TLS, and Mieru protocol fields explicit;
-  unsupported subscription combinations are rejected instead of silently
-  converted or dropped.
-- Add the complete Xboard compatibility patch for upstream commit
-  `d826a3b32f73bde24acce2a3ab033c6538ce121d`, including node-config
-  normalization, UUID credential validation, subscription protocol assertions,
-  HTTP 422 reporting, and PHP snapshot tests.
-- Keep amd64/arm64 build metadata, checksums, installer backups, and rollback
-  inputs tied to one exact source commit.
-
-Known release gate: real server and client interoperability evidence (including
-Cronet Naive, Shadowrocket, AnyTLS, Mieru, HTTP/HTTPS, and the full fifteen-item
-matrix) must be recorded before publication. No production panel or server is
-changed by this source tree.
-
-## V1.0.0
-
-Production baseline. See the historical [V1.0.0 acceptance record](docs/release-v1.0.0-acceptance.md).
+Node-Stable was initialized from an immutable Xboard-Node source snapshot identified in `UPSTREAM_SOURCE_COMMIT`. Subsequent releases are produced by this repository's own CI and release process. Refer to Git history for v1.0.1/v1.0.0 development notes and older acceptance plans; they are not current release gates.
