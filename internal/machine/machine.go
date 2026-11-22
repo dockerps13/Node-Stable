@@ -250,7 +250,7 @@ func (o *Orchestrator) removeHandleIfCurrent(nodeID int, done chan struct{}) {
 	o.mu.Unlock()
 }
 
-func (o *Orchestrator) stopNode(nodeID int) {
+func (o *Orchestrator) stopNode(nodeID int, reason string) {
 	o.mu.Lock()
 	h, ok := o.nodes[nodeID]
 	if !ok {
@@ -264,7 +264,7 @@ func (o *Orchestrator) stopNode(nodeID int) {
 	delete(o.mailboxes, nodeID)
 	o.eventsMu.Unlock()
 
-	nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", nodeID))
+	nlog.Core().Info("machine: stopping node", "node_id", nodeID, "reason", reason)
 	h.cancel()
 	<-h.done
 }
@@ -278,7 +278,7 @@ func (o *Orchestrator) stopAll() {
 	o.mu.Unlock()
 
 	for id, h := range handles {
-		nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", id))
+		nlog.Core().Info("machine: stopping node", "node_id", id, "reason", "service_shutdown")
 		h.cancel()
 	}
 	for _, h := range handles {
@@ -364,7 +364,7 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 	}
 
 	for _, id := range toRemove {
-		o.stopNode(id)
+		o.stopNode(id, "absent_from_panel_discovery")
 	}
 
 	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
@@ -490,7 +490,7 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 				o.mu.Unlock()
 				if needsRestart {
 					// Wait for the old service to flush traffic before port reuse.
-					o.stopNode(nodeID)
+					o.stopNode(nodeID, "kernel_or_obfs_reconfigure")
 					// Fetch the latest complete panel config for the new kernel.
 					o.startNode(o.runCtx, attachedNode)
 				}
