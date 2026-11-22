@@ -120,8 +120,10 @@ type WSConfig struct {
 type KernelConfig struct {
 	// TCPProbe enables a bare TCP handshake listener on Hysteria2/TUIC UDP ports.
 	// This is only a compatibility RTT probe, not a QUIC or proxy latency test.
-	// Disabled by default; enable only when clients require TCP port checks.
-	TCPProbe  bool   `yaml:"tcp_probe"`
+	// Default enabled for panel-managed machine nodes, unless explicitly disabled.
+	// Other modes retain the historical disabled default.
+	TCPProbe bool `yaml:"tcp_probe"`
+	tcpProbeConfigured bool
 	Type      string `yaml:"type"` // "singbox" or "xray"
 	ConfigDir string `yaml:"config_dir"`
 	LogLevel  string `yaml:"log_level"`
@@ -146,6 +148,25 @@ type KernelConfig struct {
 	// customization of dns, outbounds, endpoints, route, experimental, etc.
 	// Compatible with V2bX OriginalPath format.
 	CustomConfig string `yaml:"custom_config"`
+}
+
+// UnmarshalYAML records whether tcp_probe was explicitly supplied. This
+// distinguishes a deliberate false from an omitted option when upgrading
+// existing machine-mode configurations.
+func (c *KernelConfig) UnmarshalYAML(node *yaml.Node) error {
+	type plain KernelConfig
+	var decoded plain
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = KernelConfig(decoded)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "tcp_probe" {
+			c.tcpProbeConfigured = true
+			break
+		}
+	}
+	return nil
 }
 
 type CertConfig struct {
@@ -506,9 +527,12 @@ func (c *Config) inheritFrom(parent *Config) {
 	if c.Kernel.LogLevel == "" {
 		c.Kernel.LogLevel = parent.Kernel.LogLevel
 	}
-	// A true top-level TCP probe setting is inherited by instances.
-	// Per-instance false cannot override true with a plain YAML bool.
-	if parent.Kernel.TCPProbe {
+	// Inherit explicit TCP probe selection only when the instance omits it.
+	// Preserve a deliberate per-instance false even if the parent is true.
+	if !c.Kernel.tcpProbeConfigured && parent.Kernel.tcpProbeConfigured {
+		c.Kernel.TCPProbe = parent.Kernel.TCPProbe
+		c.Kernel.tcpProbeConfigured = true
+	} else if !c.Kernel.tcpProbeConfigured && parent.Kernel.TCPProbe {
 		c.Kernel.TCPProbe = true
 	}
 	if c.Kernel.GeoDataDir == "" {
@@ -816,6 +840,11 @@ func (c *Config) ExpandMachineNode(nodeID int, nodeType string) *Config {
 	nodeCfg.Panel.Token = c.Machine.Token
 	nodeCfg.Panel.MachineID = c.Machine.MachineID
 
+	// Machine-managed QUIC protocols need a TCP handshake-only listener for
+	// legacy client TCPing; leave deliberate tcp_probe: false untouched.
+	if !nodeCfg.Kernel.tcpProbeConfigured {
+		nodeCfg.Kernel.TCPProbe = true
+	}
 	nodeCfg.Kernel.ConfigDir = fmt.Sprintf("%s/node-%d", c.Kernel.ConfigDir, nodeID)
 	if nodeCfg.Kernel.GeoDataDir == c.Kernel.ConfigDir {
 		nodeCfg.Kernel.GeoDataDir = c.Kernel.GeoDataDir
