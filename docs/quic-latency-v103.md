@@ -1,4 +1,4 @@
-# Hysteria2 / TUIC latency compatibility (v1.0.3 candidate)
+# Hysteria2 / TUIC TCP latency compatibility (v1.0.3 stable)
 
 **Do not interpret a missing TCP-ping number as proof that a UDP/QUIC proxy is down.** Hysteria2 and TUIC have UDP-only QUIC transport. A TCP connect test is not a protocol-authenticated RTT measurement. It is not equivalent to latency measured through a working proxy tunnel.
 
@@ -26,7 +26,7 @@ kernel:
 
 In machine mode, the top-level kernel option is inherited by each managed node. When enabled, a running Hysteria2 or TUIC UDP listener may additionally expose a **bare TCP accept/close socket on the same numeric port**. This can satisfy clients measuring TCP connect RTT. It does **not** test UDP delivery, QUIC, TLS, credentials, proxy egress or real user latency. TCP probe startup failure never interrupts the UDP listener; logs include `TCP latency probe unavailable` if the TCP port is occupied.
 
-Enabling this opens another public TCP listening socket; it is **opt-in** and must be reviewed against local firewall/security posture. If you choose to enable it, first back up the config; change only the existing kernel section; validate YAML and restart during a maintenance window. Never add a duplicate `kernel:` block or overwrite panel tokens.
+Enabling this opens another public TCP listening socket; it is **enabled by default in machine mode as of v1.0.3**, unless explicitly disabled, and must be reviewed against local firewall/security posture. For non-machine modes, opt in with the existing kernel section after taking a backup; validate YAML and restart during a maintenance window. Never add a duplicate `kernel:` block or overwrite panel tokens.
 
 ## Release acceptance gate
 
