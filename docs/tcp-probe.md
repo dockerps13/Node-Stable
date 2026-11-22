@@ -1,32 +1,16 @@
-# Optional TCP latency probe for Hysteria2 and TUIC
+# TCP connect latency probe for Hysteria2 / TUIC
 
-Hysteria2 and TUIC use UDP/QUIC. Some client TCP port-check latency tests send
-TCP SYN packets to the configured endpoint, receive RST from a UDP-only port,
-and show a blank result despite successful QUIC proxy traffic.
+Hysteria2 and TUIC run on UDP/QUIC. Some clients use a **TCP port connect** test and display blank TCPing even when the actual proxy works.
 
-To opt in:
+**Since Node-Stable v1.0.3:** in **panel-managed machine mode**, a successfully running Hysteria2/TUIC node automatically exposes a same-numeric-port TCP handshake endpoint when `kernel.tcp_probe` is omitted. To disable it, explicitly set:
 
 ```yaml
 kernel:
-  type: singbox
-  tcp_probe: true
+  tcp_probe: false
 ```
 
-This setting is **off by default**. On a successfully started Hysteria2 or
-TUIC inbound, the process additionally listens for TCP handshakes on the
-same numbered port, then immediately closes accepted sockets. UDP is unchanged.
-Machine mode uses each discovered node's port. The listener is reused on a
-same-port kernel replacement and closed when the node stops, changes protocol,
-or moves to a different port. A TCP bind conflict is logged and does not
-prevent the UDP proxy from starting.
+For non-machine modes, opt in with `tcp_probe: true`. Do not create a duplicate `kernel:` mapping in YAML. An existing TCP bind conflict is logged and does not stop the UDP inbound. The TCP socket closes accepted connections immediately; it is not a proxy and must not be advertised as QUIC RTT.
 
-**Important:** The reported latency is a TCP handshake/port reachability
-measurement. It is *not* QUIC round-trip time, authentication success, or real
-proxy-request latency. Prefer a real proxied HTTP connectivity test where the
-client offers it. Enable only on trusted deployments with appropriate TCP
-security-group/firewall policy; this opens extra TCP ports. Do not enable
-alongside `socat` or another TCP service on the same port. For multi-instance
-configuration, top-level `kernel.tcp_probe: true` is inherited by instances.
+External TCP Ping requires the server/network/cloud firewall to allow **TCP** to that port; real Hysteria2/TUIC traffic additionally requires **UDP**. Always validate a real authenticated proxy/HTTP URL request separately.
 
-Run `go test ./internal/tcpprobe ./internal/kernel/singbox ./internal/config`
-and verify an actual Shadowrocket client before enabling on production.
+[More about latency and QUIC troubleshooting](quic-latency-v103.md).
