@@ -1,0 +1,32 @@
+name: QUIC protocol and latency compatibility
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/kernel/singbox/**'
+      - 'internal/tcpprobe/**'
+      - 'internal/config/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/quic-compat.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  quic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: QUIC protocol tests and RTT probe
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout=12m ./internal/tcpprobe
+          go test -count=1 -timeout=12m ./internal/kernel/singbox -run 'TestQUICUDPAndOptionalTCPProbeCoexist|TestTCPProbe|TestProtocolClientRoundTrip'
+      - name: Linux amd64 build
+        run: |
+          CGO_ENABLED=0 go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -o /tmp/node-stable ./cmd/xboard-node
