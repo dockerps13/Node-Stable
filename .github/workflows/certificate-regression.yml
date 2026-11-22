@@ -1,0 +1,29 @@
+name: Certificate safety regression
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/cert/**'
+      - 'internal/service/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/certificate-regression.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Certificate and TLS fail-closed tests
+        run: |
+          go test -count=1 ./internal/cert ./internal/service
+      - name: Validate binaries still build
+        run: |
+          CGO_ENABLED=0 go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -o /tmp/xboard-node ./cmd/xboard-node
