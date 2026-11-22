@@ -25,6 +25,7 @@ jobs:
       - name: QUIC protocol tests and RTT probe
         run: |
           set -euo pipefail
+          go test -count=1 -timeout=12m ./internal/config
           go test -count=1 -timeout=12m ./internal/tcpprobe
           go test -tags 'with_quic with_utls with_wireguard with_acme with_clash_api' -count=1 -timeout=12m ./internal/kernel/singbox -run 'TestQUICUDPAndOptionalTCPProbeCoexist|TestTCPProbe|TestProtocolClientRoundTrip'
       - name: Linux amd64 build
