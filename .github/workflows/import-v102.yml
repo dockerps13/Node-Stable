@@ -1,0 +1,32 @@
+name: Import fixed v1.0.2 source
+on:
+  push:
+    paths: ['.github/workflows/import-v102.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Import immutable upstream source tree
+        run: |
+          set -euo pipefail
+          test ! -f go.mod || { echo "Already imported"; exit 0; }
+          mkdir -p /tmp/stable-src
+          curl --fail --location --retry 3 "https://github.com/dockerps13/Xboard-Node/archive/ce297cf53c05214bb2495e0b031d92b475229be3.tar.gz" -o /tmp/source.tar.gz
+          tar -xzf /tmp/source.tar.gz -C /tmp/stable-src --strip-components=1
+          test -f /tmp/stable-src/go.mod
+          test -f /tmp/stable-src/cmd/xboard-node/main.go
+          rm -rf /tmp/stable-src/.github/workflows
+          cp -a /tmp/stable-src/. ./
+          mkdir -p .github/workflows
+          printf '%s\n' "ce297cf53c05214bb2495e0b031d92b475229be3" > UPSTREAM_SOURCE_COMMIT
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Import Node-Stable v1.0.2 from immutable upstream commit"
+          git push origin HEAD:main
