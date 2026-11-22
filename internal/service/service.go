@@ -1189,11 +1189,18 @@ func (s *Service) stopForTLS(ctx context.Context) {
 	if s.lastConfig != nil {
 		protocol = s.lastConfig.Protocol
 	}
+	var nodeID int
+	certMode, certDomain := "", ""
+	if s.cfg != nil {
+		nodeID = s.cfg.Panel.NodeID
+		certMode = s.cfg.Cert.CertMode
+		certDomain = s.cfg.Cert.Domain
+	}
 	nlog.Core().Warn("TLS certificate unavailable or configuration pending; listener disabled",
-		"node_id", s.cfg.Panel.NodeID,
+		"node_id", nodeID,
 		"protocol", protocol,
-		"cert_mode", s.cfg.Cert.CertMode,
-		"cert_domain", s.cfg.Cert.Domain,
+		"cert_mode", certMode,
+		"cert_domain", certDomain,
 		"cert_apply_failed", s.certApplyFailed,
 	)
 }
