@@ -1,0 +1,602 @@
+// Package machine implements the machine-mode orchestrator that dynamically
+// discovers nodes from the panel's machine API and manages their lifecycles.
+package machine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/cedar2025/xboard-node/internal/controlplane"
+	"github.com/cedar2025/xboard-node/internal/devicegate"
+	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/cedar2025/xboard-node/internal/monitor"
+	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/panel"
+	"github.com/cedar2025/xboard-node/internal/service"
+)
+
+// nodeHandle tracks a running node service.
+type nodeHandle struct {
+	cancel      context.CancelFunc
+	done        chan struct{}
+	mailbox     *controlplane.NodeMailbox
+	kernelType  string
+	obfsEnabled bool
+	revision    int64
+	node        panel.MachineNode
+}
+
+// Orchestrator manages all nodes bound to a panel machine. It:
+//   - discovers nodes via GET /machine/nodes
+//   - starts / stops Service instances as nodes are added / removed
+//   - maintains a shared WS connection that demuxes events by node_id
+//   - reports machine-level load via POST /machine/status
+type Orchestrator struct {
+	cfg    *config.Config
+	client *panel.Client // machine-level client (no node_id)
+
+	mu        sync.Mutex
+	nodes     map[int]*nodeHandle  // node_id → handle
+	admission *devicegate.Registry // shared by every protocol service on this machine
+
+	// Serializes discovery and per-node kernel restarts.
+	lifecycleMu sync.Mutex
+	discoverCh  chan struct{}
+
+	// Per-node mailbox keyed by node_id. Shared WS events are aggregated here
+	// and each node service drains the latest state when ready.
+	eventsMu  sync.RWMutex
+	mailboxes map[int]*controlplane.NodeMailbox
+	statuses  map[int]chan<- controlplane.StatusChange
+
+	// Shared WS client (nil when WS is disabled).
+	ws       *panel.WSClient
+	wsCancel context.CancelFunc
+
+	// runCtx is stored from Run() for node restarts triggered by WS updates.
+	runCtx context.Context
+
+	pullInterval time.Duration
+	pushInterval time.Duration
+}
+
+// New creates a machine orchestrator from the given config.
+func New(cfg *config.Config) *Orchestrator {
+	panelCfg := config.PanelConfig{
+		URL:       cfg.Panel.URL,
+		Token:     cfg.Machine.Token,
+		MachineID: cfg.Machine.MachineID,
+	}
+	return &Orchestrator{
+		cfg:        cfg,
+		client:     panel.NewClient(panelCfg),
+		nodes:      make(map[int]*nodeHandle),
+		admission:  devicegate.New(),
+		mailboxes:  make(map[int]*controlplane.NodeMailbox),
+		statuses:   make(map[int]chan<- controlplane.StatusChange),
+		discoverCh: make(chan struct{}, 1),
+	}
+}
+
+// Run is the main loop. It blocks until ctx is cancelled.
+func (o *Orchestrator) Run(ctx context.Context) error {
+	o.runCtx = ctx
+	nodesResp, err := o.client.GetMachineNodes()
+	if err != nil {
+		return fmt.Errorf("initial node discovery: %w", err)
+	}
+
+	o.applyIntervals(nodesResp.BaseConfig)
+	nlog.Core().Info(fmt.Sprintf("machine %d: discovered %d nodes",
+		o.cfg.Machine.MachineID, len(nodesResp.Nodes)))
+
+	// Start machine-level WS as early as possible so sync.nodes can reach an
+	// empty machine before the first node is attached.
+	o.tryStartWS(ctx)
+
+	// Bound parallel startup so one slow panel node-config request cannot
+	// delay all other machine nodes, without creating a request stampede.
+	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
+
+	discoveryTicker := time.NewTicker(o.pullInterval)
+	statusTicker := time.NewTicker(o.pushInterval)
+	defer discoveryTicker.Stop()
+	defer statusTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			o.stopAll()
+			return nil
+
+		case <-discoveryTicker.C:
+			o.rediscover(ctx)
+
+		case <-o.discoverCh:
+			o.rediscover(ctx)
+
+		case <-statusTicker.C:
+			o.reportMachineStatus()
+		}
+	}
+}
+
+// ─── Node lifecycle ──────────────────────────────────────────────────────
+
+func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
+	o.mu.Lock()
+	if _, exists := o.nodes[mn.ID]; exists {
+		o.mu.Unlock()
+		return
+	}
+
+	nodeCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	mb := controlplane.NewNodeMailbox()
+	o.nodes[mn.ID] = &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
+	o.mu.Unlock()
+
+	o.eventsMu.Lock()
+	o.mailboxes[mn.ID] = mb
+	o.eventsMu.Unlock()
+
+	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
+
+	perNodeClient := o.client.ForNode(mn.ID)
+	var initialSnapshot *panel.NodeConfig
+
+	// Inspect full node capabilities before launching an inbound. Never
+	// silently ignore unsupported protocol features (e.g. SS simple-obfs).
+	if cfgSnapshot, err := perNodeClient.GetConfig(); err == nil && cfgSnapshot != nil {
+		initialSnapshot = cfgSnapshot
+		resolved, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(cfgSnapshot), nodeCfg.Kernel.Type)
+		if selectErr != nil {
+			nlog.Core().Error(fmt.Sprintf("machine: node %d not started: %v", mn.ID, selectErr))
+			cancel()
+			o.mu.Lock()
+			delete(o.nodes, mn.ID)
+			o.mu.Unlock()
+			o.eventsMu.Lock()
+			delete(o.mailboxes, mn.ID)
+			o.eventsMu.Unlock()
+			return
+		}
+		if resolved != nodeCfg.Kernel.Type {
+			nlog.Core().Info(fmt.Sprintf("machine: auto-switching kernel for node %d (%s→%s, protocol=%s, transport=%s)",
+				mn.ID, nodeCfg.Kernel.Type, resolved, cfgSnapshot.Protocol, cfgSnapshot.Network))
+			nodeCfg.Kernel.Type = resolved
+		}
+	} else {
+		if err == nil {
+			err = fmt.Errorf("panel returned empty node config")
+		}
+		nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		cancel()
+		o.mu.Lock()
+		delete(o.nodes, mn.ID)
+		o.mu.Unlock()
+		o.eventsMu.Lock()
+		delete(o.mailboxes, mn.ID)
+		o.eventsMu.Unlock()
+		return
+	}
+	// Persist the per-node kernel so WS updates are validated against the
+	// kernel actually running, not the global machine default.
+	o.mu.Lock()
+	if h, ok := o.nodes[mn.ID]; ok {
+		h.kernelType = nodeCfg.Kernel.Type
+		if initialSnapshot != nil {
+			h.revision = initialSnapshot.RuntimeRevision
+			h.obfsEnabled = initialSnapshot.Plugin != ""
+		}
+	}
+	o.mu.Unlock()
+
+	// Reset cached ETag so the subsequent GetConfig in Initial() gets a full response.
+	perNodeClient.ResetConfigETag()
+
+	var push controlplane.PushClient
+	if o.ws != nil {
+		push = &machineNodePush{
+			nodeID: mn.ID,
+			ws:     o.ws,
+		}
+	}
+
+	// The registerFn is called by MachinePanelControlPlane.Initial() to expose
+	// the node mailbox + status channel to the Service.
+	nodeID := mn.ID
+	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
+		o.registerNode(nodeID, st)
+		return mb
+	}
+
+	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
+	cp.SetInitialConfig(initialSnapshot)
+	svc := service.NewWithControlPlane(nodeCfg, cp)
+	// All protocols and both kernels on this authenticated machine use one
+	// atomic per-user public-IP admission table rather than per-node quotas.
+	svc.SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool) {
+		return o.admission.Acquire(fmt.Sprintf("%s/%d", o.cfg.Panel.URL, o.cfg.Machine.MachineID), userID, sourceIP, limit)
+	})
+
+	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
+		mn.ID, mn.Type, mn.Name))
+
+	go func() {
+		defer close(done)
+		defer o.unregisterNode(mn.ID)
+		// Reap the handle even on unexpected initial setup or runtime exit.
+		// Otherwise rediscovery sees a stale node ID and never retries it.
+		defer o.removeHandleIfCurrent(mn.ID, done)
+		if err := svc.Run(nodeCtx); err != nil {
+			nlog.Core().Error("machine node exited with error",
+				"node_id", mn.ID, "error", err)
+		}
+	}()
+}
+
+// removeHandleIfCurrent removes only the exact exiting generation. An old
+// service exiting after replacement must not delete the new service handle.
+func (o *Orchestrator) removeHandleIfCurrent(nodeID int, done chan struct{}) {
+	o.mu.Lock()
+	if active, ok := o.nodes[nodeID]; ok && active.done == done {
+		delete(o.nodes, nodeID)
+	}
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) stopNode(nodeID int) {
+	o.mu.Lock()
+	h, ok := o.nodes[nodeID]
+	if !ok {
+		o.mu.Unlock()
+		return
+	}
+	delete(o.nodes, nodeID)
+	o.mu.Unlock()
+
+	o.eventsMu.Lock()
+	delete(o.mailboxes, nodeID)
+	o.eventsMu.Unlock()
+
+	nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", nodeID))
+	h.cancel()
+	<-h.done
+}
+
+func (o *Orchestrator) stopAll() {
+	o.mu.Lock()
+	handles := make(map[int]*nodeHandle, len(o.nodes))
+	for id, h := range o.nodes {
+		handles[id] = h
+	}
+	o.mu.Unlock()
+
+	for id, h := range handles {
+		nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", id))
+		h.cancel()
+	}
+	for _, h := range handles {
+		<-h.done
+	}
+
+	if o.wsCancel != nil {
+		o.wsCancel()
+	}
+}
+
+// startDiscoveredNodes bounds concurrent config fetches and node launches to
+// keep panel load predictable while avoiding head-of-line blocking when a
+// single node's REST config endpoint is slow.
+func (o *Orchestrator) startDiscoveredNodes(ctx context.Context, nodes []panel.MachineNode) {
+	runBoundedMachineNodes(ctx, nodes, 4, func(n panel.MachineNode) {
+		o.startNode(ctx, n)
+	})
+}
+
+// runBoundedMachineNodes limits concurrent REST operations while allowing
+// deterministic tests of cancellation, completion and concurrency limits.
+func runBoundedMachineNodes(ctx context.Context, nodes []panel.MachineNode, limit int, work func(panel.MachineNode)) {
+	if limit < 1 {
+		limit = 1
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, node := range nodes {
+		// An already-cancelled context must not race a ready semaphore send.
+		if ctx.Err() != nil {
+			wg.Wait()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(n panel.MachineNode) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			work(n)
+		}(node)
+	}
+	wg.Wait()
+}
+
+// ─── Node discovery ──────────────────────────────────────────────────────
+
+func (o *Orchestrator) rediscover(ctx context.Context) {
+	// Serialize the request as well as its application: a delayed older
+	// discovery response must not stop nodes from a newer snapshot.
+	o.lifecycleMu.Lock()
+	defer o.lifecycleMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	nodesResp, err := o.client.GetMachineNodes()
+	if err != nil {
+		nlog.Core().Warn("machine node discovery failed", "error", err)
+		return
+	}
+
+	wanted := make(map[int]panel.MachineNode, len(nodesResp.Nodes))
+	for _, n := range nodesResp.Nodes {
+		wanted[n.ID] = n
+	}
+
+	o.mu.Lock()
+	var toRemove []int
+	for id := range o.nodes {
+		if _, ok := wanted[id]; !ok {
+			toRemove = append(toRemove, id)
+		}
+	}
+	o.mu.Unlock()
+
+	if ctx.Err() != nil {
+		return
+	}
+
+	for _, id := range toRemove {
+		o.stopNode(id)
+	}
+
+	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
+}
+
+// ─── Machine status reporting ────────────────────────────────────────────
+
+func (o *Orchestrator) reportMachineStatus() {
+	s := monitor.Collect()
+	if err := o.client.ReportMachineStatus(
+		s.CPU,
+		[2]uint64{s.MemTotal, s.MemUsed},
+		[2]uint64{s.SwapTotal, s.SwapUsed},
+		[2]uint64{s.DiskTotal, s.DiskUsed},
+		s.NetInSpeed, s.NetOutSpeed,
+	); err != nil {
+		nlog.Core().Warn("machine status report failed", "error", err)
+	}
+}
+
+// ─── WS mux ─────────────────────────────────────────────────────────────
+
+func (o *Orchestrator) tryStartWS(ctx context.Context) {
+	hs, err := o.client.Handshake()
+	if err != nil {
+		nlog.Core().Warn("machine ws handshake failed, REST only", "error", err)
+		return
+	}
+	if !hs.WebSocket.Enabled || hs.WebSocket.WSURL == "" {
+		nlog.Core().Info("machine: ws disabled by panel, REST only")
+		return
+	}
+
+	wsCfg := panel.WSClientConfig{
+		StatusInterval:   time.Duration(o.cfg.WS.StatusInterval) * time.Second,
+		HandshakeTimeout: time.Duration(o.cfg.WS.HandshakeTimeout) * time.Second,
+		BackoffInitial:   time.Duration(o.cfg.WS.BackoffInitial) * time.Second,
+		BackoffMax:       time.Duration(o.cfg.WS.BackoffMax) * time.Second,
+		MachineID:        o.cfg.Machine.MachineID,
+	}
+
+	o.ws = panel.NewWSClient(
+		hs.WebSocket.WSURL,
+		o.cfg.Machine.Token,
+		0, // no single node_id
+		wsCfg,
+		o.onWSEvent,
+		o.onWSStatus,
+		nil, // per-node status is sent via machineNodePush
+	)
+
+	wsCtx, wsCancel := context.WithCancel(ctx)
+	o.wsCancel = wsCancel
+	go o.ws.Run(wsCtx)
+
+	nlog.Core().Info("machine: ws mux started")
+}
+
+// onWSEvent routes a WS event to the correct node's channel.
+// sync.nodes is a machine-level event that triggers immediate rediscovery.
+func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
+	// sync.nodes is a machine-level event, not per-node
+	if event.Type == panel.WSEventSyncNodes {
+		nlog.Core().Info("machine received sync.nodes, triggering immediate rediscovery")
+		// Coalesce bursts of notifications into at most one pending discovery.
+		// No unbounded goroutine queue while the panel is slow or unavailable.
+		select {
+		case o.discoverCh <- struct{}{}:
+		default:
+		}
+		return
+	}
+
+	nodeID := event.NodeID
+	if nodeID == 0 {
+		nlog.Core().Debug("machine ws event missing node_id, dropping", "type", event.Type)
+		return
+	}
+
+	// A single machine may run mixed Xray and sing-box nodes. The global
+	// kernel is not a valid basis for validating incoming node updates.
+	o.mu.Lock()
+	h, exists := o.nodes[nodeID]
+	currentKernel := ""
+	var currentRevision int64
+	var currentObfsEnabled bool
+	var attachedNode panel.MachineNode
+	if exists {
+		currentKernel = h.kernelType
+		currentRevision = h.revision
+		currentObfsEnabled = h.obfsEnabled
+		attachedNode = h.node
+	}
+	o.mu.Unlock()
+	if !exists || currentKernel == "" {
+		nlog.Core().Debug("machine ws event for not-ready node", "node_id", nodeID)
+		return
+	}
+	if event.Config != nil {
+		if currentRevision > 0 && event.Config.RuntimeRevision > 0 && event.Config.RuntimeRevision < currentRevision {
+			nlog.Core().Debug("machine: stale config push ignored", "node_id", nodeID)
+			return
+		}
+		desiredKernel, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(event.Config), currentKernel)
+		if selectErr != nil {
+			nlog.Core().Warn("machine: unsupported node update, keeping running config",
+				"node_id", nodeID, "error", selectErr)
+			return
+		}
+		// The same public TCP port cannot safely be shared between native
+		// simple-obfs and a plain Shadowsocks inbound while switching
+		// plugin state. Restart the node after accounting its last bytes.
+		newObfsEnabled := event.Config.Plugin != ""
+		if desiredKernel != currentKernel || newObfsEnabled != currentObfsEnabled {
+			nlog.Core().Info(fmt.Sprintf("machine: node %d requires kernel/obfs change (%s→%s, obfs=%t→%t), scheduling safe restart",
+				nodeID, currentKernel, desiredKernel, currentObfsEnabled, newObfsEnabled))
+			go func() {
+				o.lifecycleMu.Lock()
+				defer o.lifecycleMu.Unlock()
+				o.mu.Lock()
+				active, ok := o.nodes[nodeID]
+				needsRestart := ok && (active.kernelType != desiredKernel || active.obfsEnabled != newObfsEnabled)
+				o.mu.Unlock()
+				if needsRestart {
+					// Wait for the old service to flush traffic before port reuse.
+					o.stopNode(nodeID)
+					// Fetch the latest complete panel config for the new kernel.
+					o.startNode(o.runCtx, attachedNode)
+				}
+			}()
+			return
+		}
+	}
+	effectiveKernel := o.cfg.Kernel
+	effectiveKernel.Type = currentKernel
+	translated, err := controlplane.TranslateWSEvent(event, effectiveKernel)
+	if err != nil {
+		nlog.Core().Warn("machine ws event translation failed",
+			"type", event.Type, "node_id", nodeID, "error", err)
+		return
+	}
+
+	o.eventsMu.RLock()
+	mailbox, ok := o.mailboxes[nodeID]
+	o.eventsMu.RUnlock()
+	if !ok {
+		nlog.Core().Debug("machine ws event for unknown node", "node_id", nodeID, "type", event.Type)
+		return
+	}
+	// Record the revision only after the update was accepted and its
+	// configuration successfully translated. Invalid pushes must not prevent
+	// subsequent valid revisions from being applied.
+	if event.Config != nil && event.Config.RuntimeRevision > currentRevision {
+		o.mu.Lock()
+		if active, ok := o.nodes[nodeID]; ok && active == h {
+			active.revision = event.Config.RuntimeRevision
+		}
+		o.mu.Unlock()
+	}
+	mailbox.Apply(translated)
+}
+
+// onWSStatus broadcasts WS connectivity changes to all registered nodes.
+func (o *Orchestrator) onWSStatus(status panel.WSStatusChange) {
+	change := controlplane.StatusChange{Connected: status.Connected}
+	o.eventsMu.RLock()
+	defer o.eventsMu.RUnlock()
+	for _, ch := range o.statuses {
+		select {
+		case ch <- change:
+		default:
+		}
+	}
+}
+
+func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusChange) {
+	o.eventsMu.Lock()
+	o.statuses[nodeID] = st
+	o.eventsMu.Unlock()
+}
+
+func (o *Orchestrator) unregisterNode(nodeID int) {
+	o.eventsMu.Lock()
+	delete(o.mailboxes, nodeID)
+	delete(o.statuses, nodeID)
+	o.eventsMu.Unlock()
+}
+
+func (o *Orchestrator) applyIntervals(bc panel.MachineBaseConfig) {
+	o.pullInterval = time.Duration(bc.PullInterval) * time.Second
+	if o.pullInterval < 30*time.Second {
+		o.pullInterval = 60 * time.Second
+	}
+	o.pushInterval = time.Duration(bc.PushInterval) * time.Second
+	if o.pushInterval < 10*time.Second {
+		o.pushInterval = 60 * time.Second
+	}
+}
+
+// ─── Virtual PushClient ─────────────────────────────────────────────────
+
+// machineNodePush implements controlplane.PushClient for a single node
+// backed by the shared machine WS connection. Events are routed by the
+// WS mux directly to the Service's channels; this adapter only provides
+// connectivity status and send capabilities.
+type machineNodePush struct {
+	nodeID int
+	ws     *panel.WSClient
+}
+
+func (p *machineNodePush) Run(ctx context.Context) {
+	// The shared WS mux pushes events into our channels; we just wait.
+	<-ctx.Done()
+}
+
+func (p *machineNodePush) IsConnected() bool {
+	return p.ws != nil && p.ws.IsConnected()
+}
+
+func (p *machineNodePush) SendDeviceReport(devices map[int][]string) {
+	if p.ws == nil {
+		return
+	}
+	payload := map[string]interface{}{
+		"node_id": p.nodeID,
+	}
+	// Flatten into the standard format with node_id wrapper.
+	strDevices := make(map[string][]string, len(devices))
+	for uid, ips := range devices {
+		strDevices[fmt.Sprintf("%d", uid)] = ips
+	}
+	payload["devices"] = strDevices
+	data, _ := json.Marshal(payload)
+	p.ws.SendRaw(panel.WSEventReportDevices, data)
+}
