@@ -1,7 +1,6 @@
 # AutoKernel: Machine-mode commercial compatibility
 
-> **Status:** development branch / draft PR. CI passing is a necessary
-> gate, not proof of interoperability with a live XBoard installation.
+> **Status:** engineering design reference for Node-Stable machine-mode automatic kernel selection. Some features are implemented and regression-tested; individual protocol/client compatibility and commercial production acceptance still require real staging tests.
 
 ## Goals
 
