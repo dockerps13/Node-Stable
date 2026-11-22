@@ -46,6 +46,7 @@ type Service struct {
 	cert          *cert.Manager
 
 	certApplyFailed bool // main-loop owned; do not serve TLS with stale or absent material
+	tlsDisabledLogged bool // main-loop owned; log certificate outage on state transition
 
 	lastConfig *model.NodeSpec
 	lastUsers  []model.UserSpec
@@ -917,6 +918,7 @@ func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
 		nlog.Core().Error("failed to start kernel", "error", err)
 		return false
 	}
+	s.tlsDisabledLogged = false
 
 	s.setAppliedState(nc, users)
 
@@ -1179,6 +1181,10 @@ func (s *Service) stopForTLS(ctx context.Context) {
 		s.tracker.ClearLiveDevices()
 	}
 	s.clearAppliedState()
+	if s.tlsDisabledLogged {
+		return
+	}
+	s.tlsDisabledLogged = true
 	protocol := ""
 	if s.lastConfig != nil {
 		protocol = s.lastConfig.Protocol
