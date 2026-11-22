@@ -1,5 +1,15 @@
 # Changelog
 
+## V1.0.3 (2026-11-22)
+
+- Enable optional same-port TCP connect latency probes **by default on panel-managed machine-mode Hysteria2 and TUIC nodes**. No manual `kernel.tcp_probe: true` change is needed after a verified binary upgrade or a new machine-mode installation. Keep UDP/QUIC serving as before.
+- Respect explicit `kernel.tcp_probe: false` for opting out; multi-instance configs inherit the top-level setting unless explicitly overridden. Standalone and single-node modes retain their previous opt-in behavior.
+- Add Hysteria2/TUIC QUIC handshake and client/server roundtrip CI with `with_quic` build tags, and same-port TCP/UDP coexistence regression coverage.
+- Reduce repeated TLS certificate outage warnings and report the node ID/protocol/domain/certificate mode, with nil-config-safe diagnostics. No CA rate limits are bypassed.
+- TCP Ping measures **TCP connection establishment only**; it is not Hysteria2/TUIC authentication, HTTP URL delay, or true QUIC RTT. Inbound TCP ports must also be allowed by cloud security groups for external TCP Ping.
+- Keep existing XBoard production databases and panel settings unchanged. Roll out using verified backups and check listening ports and both TCP/UDP reachability.
+
+
 ## V1.0.2 (release candidate — NOT STABLE)
 
 This version remains under final release acceptance. No stable tag or release
