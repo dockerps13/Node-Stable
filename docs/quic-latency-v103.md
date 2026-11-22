@@ -2,6 +2,12 @@
 
 **Do not interpret a missing TCP-ping number as proof that a UDP/QUIC proxy is down.** Hysteria2 and TUIC have UDP-only QUIC transport. A TCP connect test is not a protocol-authenticated RTT measurement. It is not equivalent to latency measured through a working proxy tunnel.
 
+## v1.0.3 machine-mode default
+
+Beginning with v1.0.3, **panel-managed machine mode automatically enables the optional TCP connect probe on running Hysteria2 and TUIC nodes**, even when an older machine config does not contain a `tcp_probe` field. Existing YAML with `kernel.tcp_probe: true` remains enabled. To opt out explicitly, set `kernel.tcp_probe: false`. Multi-instance configurations inherit the top-level setting unless an instance explicitly overrides it. Standalone and non-machine modes retain their previous opt-in behavior.
+
+This opens TCP listeners matching the QUIC UDP ports; the server firewall and cloud security group must allow **TCP**, in addition to the **UDP** ports that carry the real proxy. The TCP RTT does not prove UDP or QUIC functionality. An upgrade only takes effect after the new binary is installed and the service is restarted using the normal verified upgrade procedure; never overwrite production configuration merely to enable the new default.
+
 ## Diagnosis (read-only, Linux)
 
 1. Check actual UDP listeners: `ss -lunp | grep -E ':(8443|9443)\\b'` (replace ports with your configured UDP ports).
