@@ -1179,7 +1179,17 @@ func (s *Service) stopForTLS(ctx context.Context) {
 		s.tracker.ClearLiveDevices()
 	}
 	s.clearAppliedState()
-	nlog.Core().Warn("TLS certificate unavailable or configuration pending; listener disabled")
+	protocol := ""
+	if s.lastConfig != nil {
+		protocol = s.lastConfig.Protocol
+	}
+	nlog.Core().Warn("TLS certificate unavailable or configuration pending; listener disabled",
+		"node_id", s.cfg.Panel.NodeID,
+		"protocol", protocol,
+		"cert_mode", s.cfg.Cert.CertMode,
+		"cert_domain", s.cfg.Cert.Domain,
+		"cert_apply_failed", s.certApplyFailed,
+	)
 }
 
 func (s *Service) trackAndEnforce(ctx context.Context) {
