@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'VERSION'
+      - 'tests/release-version-policy.sh'
       - 'cmd/**'
       - 'internal/**'
       - 'third_party/**'
@@ -40,6 +41,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate release-version policy
+        run: bash tests/release-version-policy.sh
       - name: Compile for target platform
         env:
           GOOS: ${{ matrix.goos }}
