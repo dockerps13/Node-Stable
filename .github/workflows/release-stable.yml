@@ -1,0 +1,55 @@
+name: Publish Node-Stable v1.0.2
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/release-stable.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify source and installer
+        run: |
+          set -euo pipefail
+          test "$(cat UPSTREAM_SOURCE_COMMIT)" = ce297cf53c05214bb2495e0b031d92b475229be3
+          grep -Fq 'dockerps13/Node-Stable/releases' install.sh
+          bash -n install.sh
+          go test -tags "with_quic with_utls with_wireguard with_clash_api" ./...
+          bash tests/installer-safety.sh
+          bash tests/limits-acceptance.sh
+      - name: Build verified Linux packages
+        run: |
+          set -euo pipefail
+          make build-linux build-linux-arm64 VERSION=v1.0.2
+          ./xboard-node-linux-amd64 -v | grep -F v1.0.2
+          ./xbctl-linux-amd64 --help
+      - name: Package and verify
+        run: |
+          set -euo pipefail
+          mkdir dist
+          cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh dist/
+          printf '%s\n' "$GITHUB_SHA" > dist/SOURCE_COMMIT
+          cp CHANGELOG.md dist/CHANGELOG
+          (cd dist && sha256sum xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh SOURCE_COMMIT CHANGELOG > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - name: Publish new repository Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.2 >/dev/null 2>&1; then
+            echo "Existing v1.0.2 release: not overwriting"; exit 1
+          fi
+          gh release create v1.0.2 \
+            dist/xboard-node-linux-amd64 dist/xboard-node-linux-arm64 \
+            dist/xbctl-linux-amd64 dist/xbctl-linux-arm64 \
+            dist/install.sh dist/SOURCE_COMMIT dist/CHANGELOG dist/SHA256SUMS \
+            --target "$GITHUB_SHA" --title "Node-Stable v1.0.2" --latest \
+            --notes "Standalone stable repository derived from Xboard-Node v1.0.2, upstream commit ce297cf53c05214bb2495e0b031d92b475229be3. Verified Linux amd64 and arm64 packages. Other operating systems are experimental and only provided after their own build checks pass. Optional centralized cross-VPS device admission and Laravel billing idempotency are not production-validated or enabled; review the included acceptance notes."
