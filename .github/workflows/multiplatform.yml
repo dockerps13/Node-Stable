@@ -12,6 +12,8 @@ on:
       - 'go.sum'
       - 'install.sh'
       - '.github/workflows/multiplatform.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
