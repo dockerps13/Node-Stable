@@ -31,6 +31,7 @@ jobs:
           test "$(cat UPSTREAM_SOURCE_COMMIT)" = ce297cf53c05214bb2495e0b031d92b475229be3
           grep -Fq 'dockerps13/Node-Stable/releases' install.sh
           bash -n install.sh
+          bash tests/release-version-policy.sh
           test -f third_party/sing-anytls/LICENSE
       - name: Verify source and installer
         run: |
