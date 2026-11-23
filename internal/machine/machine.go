@@ -260,9 +260,9 @@ func (o *Orchestrator) stopNode(nodeID int, reason string) {
 	delete(o.nodes, nodeID)
 	o.mu.Unlock()
 
-	o.eventsMu.Lock()
-	delete(o.mailboxes, nodeID)
-	o.eventsMu.Unlock()
+	// Do not clear a replacement service's mailbox if it registered after
+	// this generation was detached from o.nodes.
+	o.unregisterNode(nodeID, h.mailbox)
 
 	nlog.Core().Info("machine: stopping node", "node_id", nodeID, "reason", reason)
 	h.cancel()
