@@ -6,6 +6,7 @@ on:
     paths:
       - 'internal/machine/**'
       - 'tests/staging-machine-smoke.sh'
+      - 'tests/staging-machine-smoke-test.sh'
       - 'internal/controlplane/**'
       - 'internal/panel/**'
       - 'internal/service/**'
@@ -35,7 +36,9 @@ jobs:
         run: |
           set -euo pipefail
           bash -n tests/staging-machine-smoke.sh
+          bash -n tests/staging-machine-smoke-test.sh
           bash tests/staging-machine-smoke.sh --help >/dev/null
+          bash tests/staging-machine-smoke-test.sh
           if bash tests/staging-machine-smoke.sh --machine-id not-a-number --expected-nodes 11; then
             echo 'Invalid staging machine ID was accepted' >&2
             exit 1
