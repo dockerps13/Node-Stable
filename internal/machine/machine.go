@@ -136,13 +136,24 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	nodeCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	// The handle exists before its config fetch finishes. If startup is
+	// aborted during the fetch, stopNode must still be able to join it.
+	// Once the service goroutine starts, that goroutine owns closing done.
+	launched := false
+	defer func() {
+		if !launched {
+			close(done)
+		}
+	}()
 	mb := controlplane.NewNodeMailbox()
-	o.nodes[mn.ID] = &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
-	o.mu.Unlock()
-
+	h := &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
+	o.nodes[mn.ID] = h
+	// Publish the matching handle and mailbox atomically with respect to
+	// start/stop. An older in-flight startup must not replace this mailbox.
 	o.eventsMu.Lock()
 	o.mailboxes[mn.ID] = mb
 	o.eventsMu.Unlock()
+	o.mu.Unlock()
 
 	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
 
@@ -151,18 +162,14 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	// Inspect full node capabilities before launching an inbound. Never
 	// silently ignore unsupported protocol features (e.g. SS simple-obfs).
-	if cfgSnapshot, err := perNodeClient.GetConfig(); err == nil && cfgSnapshot != nil {
+	if cfgSnapshot, err := perNodeClient.GetConfigContext(nodeCtx); err == nil && cfgSnapshot != nil {
 		initialSnapshot = cfgSnapshot
 		resolved, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(cfgSnapshot), nodeCfg.Kernel.Type)
 		if selectErr != nil {
 			nlog.Core().Error(fmt.Sprintf("machine: node %d not started: %v", mn.ID, selectErr))
 			cancel()
-			o.mu.Lock()
-			delete(o.nodes, mn.ID)
-			o.mu.Unlock()
-			o.eventsMu.Lock()
-			delete(o.mailboxes, mn.ID)
-			o.eventsMu.Unlock()
+			o.removeHandleIfCurrent(mn.ID, done)
+			o.unregisterNode(mn.ID, mb)
 			return
 		}
 		if resolved != nodeCfg.Kernel.Type {
@@ -174,25 +181,31 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		if err == nil {
 			err = fmt.Errorf("panel returned empty node config")
 		}
-		nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		if nodeCtx.Err() != nil {
+			nlog.Core().Info("machine: startup cancelled during config fetch", "node_id", mn.ID)
+		} else {
+			nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		}
 		cancel()
-		o.mu.Lock()
-		delete(o.nodes, mn.ID)
-		o.mu.Unlock()
-		o.eventsMu.Lock()
-		delete(o.mailboxes, mn.ID)
-		o.eventsMu.Unlock()
+		o.removeHandleIfCurrent(mn.ID, done)
+		o.unregisterNode(mn.ID, mb)
 		return
 	}
-	// Persist the per-node kernel so WS updates are validated against the
-	// kernel actually running, not the global machine default.
+	// A slow initial GetConfig may outlive a discovery removal and even a
+	// replacement startup. Never launch a retired generation after the fetch.
 	o.mu.Lock()
-	if h, ok := o.nodes[mn.ID]; ok {
-		h.kernelType = nodeCfg.Kernel.Type
-		if initialSnapshot != nil {
-			h.revision = initialSnapshot.RuntimeRevision
-			h.obfsEnabled = initialSnapshot.Plugin != ""
-		}
+	active, stillCurrent := o.nodes[mn.ID]
+	if !stillCurrent || active != h || nodeCtx.Err() != nil {
+		o.mu.Unlock()
+		cancel()
+		o.unregisterNode(mn.ID, mb)
+		return
+	}
+	// Persist the kernel that this exact service generation will run.
+	h.kernelType = nodeCfg.Kernel.Type
+	if initialSnapshot != nil {
+		h.revision = initialSnapshot.RuntimeRevision
+		h.obfsEnabled = initialSnapshot.Plugin != ""
 	}
 	o.mu.Unlock()
 
@@ -211,7 +224,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	// the node mailbox + status channel to the Service.
 	nodeID := mn.ID
 	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
-		o.registerNode(nodeID, st)
+		o.registerNode(nodeID, mb, st)
 		return mb
 	}
 
@@ -227,9 +240,11 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
 
+	launched = true
 	go func() {
 		defer close(done)
-		defer o.unregisterNode(mn.ID)
+		defer cancel()
+		defer o.unregisterNode(mn.ID, mb)
 		// Reap the handle even on unexpected initial setup or runtime exit.
 		// Otherwise rediscovery sees a stale node ID and never retries it.
 		defer o.removeHandleIfCurrent(mn.ID, done)
@@ -250,7 +265,7 @@ func (o *Orchestrator) removeHandleIfCurrent(nodeID int, done chan struct{}) {
 	o.mu.Unlock()
 }
 
-func (o *Orchestrator) stopNode(nodeID int) {
+func (o *Orchestrator) stopNode(nodeID int, reason string) {
 	o.mu.Lock()
 	h, ok := o.nodes[nodeID]
 	if !ok {
@@ -260,11 +275,11 @@ func (o *Orchestrator) stopNode(nodeID int) {
 	delete(o.nodes, nodeID)
 	o.mu.Unlock()
 
-	o.eventsMu.Lock()
-	delete(o.mailboxes, nodeID)
-	o.eventsMu.Unlock()
+	// Do not clear a replacement service's mailbox if it registered after
+	// this generation was detached from o.nodes.
+	o.unregisterNode(nodeID, h.mailbox)
 
-	nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", nodeID))
+	nlog.Core().Info("machine: stopping node", "node_id", nodeID, "reason", reason)
 	h.cancel()
 	<-h.done
 }
@@ -278,7 +293,7 @@ func (o *Orchestrator) stopAll() {
 	o.mu.Unlock()
 
 	for id, h := range handles {
-		nlog.Core().Info(fmt.Sprintf("machine: stopping node %d", id))
+		nlog.Core().Info("machine: stopping node", "node_id", id, "reason", "service_shutdown")
 		h.cancel()
 	}
 	for _, h := range handles {
@@ -364,7 +379,7 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 	}
 
 	for _, id := range toRemove {
-		o.stopNode(id)
+		o.stopNode(id, "absent_from_panel_discovery")
 	}
 
 	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
@@ -490,7 +505,7 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 				o.mu.Unlock()
 				if needsRestart {
 					// Wait for the old service to flush traffic before port reuse.
-					o.stopNode(nodeID)
+					o.stopNode(nodeID, "kernel_or_obfs_reconfigure")
 					// Fetch the latest complete panel config for the new kernel.
 					o.startNode(o.runCtx, attachedNode)
 				}
@@ -540,17 +555,26 @@ func (o *Orchestrator) onWSStatus(status panel.WSStatusChange) {
 	}
 }
 
-func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusChange) {
+// registerNode refuses stale callbacks from a retired service generation.
+func (o *Orchestrator) registerNode(nodeID int, mailbox *controlplane.NodeMailbox, st chan<- controlplane.StatusChange) {
 	o.eventsMu.Lock()
-	o.statuses[nodeID] = st
+	if o.mailboxes[nodeID] == mailbox {
+		o.statuses[nodeID] = st
+	}
 	o.eventsMu.Unlock()
 }
 
-func (o *Orchestrator) unregisterNode(nodeID int) {
+// unregisterNode removes only the resources belonging to the exiting
+// service generation. A replacement may already have registered its mailbox
+// and status channel by the time an old service finishes shutting down.
+func (o *Orchestrator) unregisterNode(nodeID int, mailbox *controlplane.NodeMailbox) {
 	o.eventsMu.Lock()
+	defer o.eventsMu.Unlock()
+	if o.mailboxes[nodeID] != mailbox {
+		return
+	}
 	delete(o.mailboxes, nodeID)
 	delete(o.statuses, nodeID)
-	o.eventsMu.Unlock()
 }
 
 func (o *Orchestrator) applyIntervals(bc panel.MachineBaseConfig) {

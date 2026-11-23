@@ -1,0 +1,87 @@
+name: Build isolated v1.0.4 staging candidate
+
+# This is a CI artifact, NOT a published release or a deployment.
+# No panel URL, credentials or remote access is configured in this workflow.
+on:
+  push:
+    branches: [develop/v1.0.4-hardening]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'install.sh'
+      - 'tests/**'
+      - 'docs/debian12-isolated-staging.md'
+      - '.github/workflows/staging-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: staging-linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate source and installer
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash -n tests/staging-machine-smoke.sh
+          bash -n tests/staging-machine-smoke-test.sh
+          bash -n tests/staging-preflight.sh
+          bash -n tests/staging-install.sh
+          bash tests/staging-preflight.sh --help >/dev/null
+          bash tests/staging-install.sh --help >/dev/null
+          if bash tests/staging-preflight.sh --panel https://soulook.org --machine-id 24; then
+            echo 'production identity accepted by staging guard' >&2
+            exit 1
+          fi
+          if bash tests/staging-preflight.sh --panel https://test.example.net --machine-id 24; then
+            echo 'production machine ID accepted by staging guard' >&2
+            exit 1
+          fi
+          bash tests/staging-machine-smoke-test.sh
+          bash tests/release-version-policy.sh
+      - name: Build candidate binaries
+        run: |
+          set -euo pipefail
+          make build-linux${{ matrix.arch == 'arm64' && '-arm64' || '' }} VERSION=v1.0.4
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            ./xboard-node-linux-amd64 -v | grep -F 'v1.0.4'
+            ./xbctl-linux-amd64 version
+          else
+            test -s xboard-node-linux-arm64
+            test -s xbctl-linux-arm64
+          fi
+      - name: Assemble checksum-verifiable staging package
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh staging/
+          cp tests/staging-machine-smoke.sh staging/staging-machine-smoke.sh
+          cp tests/staging-preflight.sh staging/staging-preflight.sh
+          cp tests/staging-install.sh staging/staging-install.sh
+          cp docs/debian12-isolated-staging.md staging/README-STAGING.md
+          printf '%s\n' "$GITHUB_SHA" > staging/SOURCE_COMMIT
+          printf '%s\n' 'UNRELEASED TEST CANDIDATE — use only on isolated staging VPS and panel; no official v1.0.4 Release exists.' > staging/STAGING_ONLY.txt
+          (cd staging && sha256sum "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh staging-machine-smoke.sh staging-preflight.sh staging-install.sh README-STAGING.md SOURCE_COMMIT STAGING_ONLY.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Node-Stable-v1.0.4-STAGING-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 14

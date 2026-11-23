@@ -2,8 +2,10 @@ name: Multi-platform build validation
 # Vendored AnyTLS dependency required and now tracked in repository
 on:
   push:
-    branches: [main]
+    branches: [main, 'develop/**']
     paths:
+      - 'VERSION'
+      - 'tests/release-version-policy.sh'
       - 'cmd/**'
       - 'internal/**'
       - 'third_party/**'
@@ -11,6 +13,8 @@ on:
       - 'go.sum'
       - 'install.sh'
       - '.github/workflows/multiplatform.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -37,6 +41,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate release-version policy
+        run: bash tests/release-version-policy.sh
       - name: Compile for target platform
         env:
           GOOS: ${{ matrix.goos }}
@@ -46,8 +52,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -ldflags "-s -w -X main.version=v1.0.2 -X main.commit=${GITHUB_SHA}" -o "dist/xboard-node-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xboard-node
-          go build -ldflags "-s -w -X main.version=v1.0.2 -X main.commit=${GITHUB_SHA}" -o "dist/xbctl-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xbctl
+          VERSION="$(cat VERSION)"
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Invalid VERSION: $VERSION"; exit 1; fi
+          go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA}" -o "dist/xboard-node-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xboard-node
+          go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA}" -o "dist/xbctl-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xbctl
       - uses: actions/upload-artifact@v4
         with:
           name: Node-Stable-${{ matrix.name }}

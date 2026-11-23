@@ -2,6 +2,7 @@ package panel
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -235,7 +236,13 @@ func (c *Client) userPath() string {
 
 // GetConfig fetches node configuration. Returns nil if not modified (304).
 func (c *Client) GetConfig() (*NodeConfig, error) {
-	resp, err := c.doRequest("GET", c.configPath(), nil, c.configETag)
+	return c.GetConfigContext(context.Background())
+}
+
+// GetConfigContext permits machine-mode startup to abort a pending panel
+// request when the node is removed or the service is shutting down.
+func (c *Client) GetConfigContext(ctx context.Context) (*NodeConfig, error) {
+	resp, err := c.doRequestContext(ctx, "GET", c.configPath(), nil, c.configETag)
 	if err != nil {
 		return nil, fmt.Errorf("get config: %w", err)
 	}
@@ -486,6 +493,10 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 }
 
 func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string) (*http.Response, error) {
+	return c.doRequestContext(context.Background(), method, path, body, ifNoneMatch)
+}
+
+func (c *Client) doRequestContext(ctx context.Context, method, path string, body []byte, ifNoneMatch string) (*http.Response, error) {
 	fullURL := c.baseURL + path
 
 	var bodyReader io.Reader
@@ -500,7 +511,7 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 		bodyReader = bytes.NewReader(merged)
 	}
 
-	req, err := http.NewRequest(method, fullURL, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
 	if err != nil {
 		return nil, safePanelTransportError(err)
 	}

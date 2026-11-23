@@ -36,12 +36,13 @@ This repository is maintained as an **independent distribution** by its GitHub o
    ```
 3. Require successful **Certificate safety regression**, **QUIC protocol and latency compatibility**, and **Multi-platform build validation** workflows where relevant.
 4. For any change involving TLS/ACME, billing, admission, certificate reuse, or config upgrades, test failure and rollback cases, not only a green happy-path.
-5. Validate at least one real compatible client in staging for newly affected protocols; verify actual UDP traffic for Hysteria2/TUIC, and separately test TCPing.
+5. Use the [v1.0.4 staging acceptance checklist](staging-acceptance-v104.md) on an isolated panel and VPS: verify real clients for all affected protocols, restart/recovery, successful per-node reports, and a backed-up rollback. Verify actual UDP traffic for Hysteria2/TUIC separately from TCPing.
 6. Review changelog, READMEs, docs and version metadata in the same change.
 
 ## Future releases
 
-- Update the hardcoded version in `.github/workflows/release-stable.yml` (workflow name, `make ... VERSION=`, binary version check, `gh release view/create`, and release notes) **in a single reviewed commit**. The current workflow is deliberately release-specific and triggers on edits to itself; editing it will start a publication job.
+- Update the root `VERSION` file and the changelog in a reviewed release preparation PR. CI enforces consistent version metadata with `tests/release-version-policy.sh`.
+- The release workflow only runs when a new semantic version tag is pushed, and verifies that tag equals `VERSION`. Editing a workflow file on `main` is not itself permission to publish. Never move or overwrite an existing release tag.
 - Make sure the final source commit is clean, tests and builds pass, and no same-tag release exists.
 - The release workflow builds Linux amd64/arm64 binaries and `xbctl`, creates `SOURCE_COMMIT`, packages `install.sh`, `CHANGELOG` and `SHA256SUMS`, then publishes a new immutable-version tag. The release *files* are tied to one source SHA; do not overwrite a released tag.
 - Independently verify GitHub release asset names, checksums, version output, and published tag SHA after the workflow finishes.

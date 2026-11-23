@@ -1,36 +1,58 @@
-name: Publish Node-Stable v1.0.3
-# Build from fully restored source including the vendored AnyTLS dependency
+name: Publish Node-Stable tagged release
+
 on:
   push:
-    branches: [main]
-    paths: ['.github/workflows/release-stable.yml']
-  workflow_dispatch:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
 permissions:
   contents: write
+
+concurrency:
+  group: stable-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 80
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-      - name: Verify source and installer
+      - name: Validate immutable version and source
         run: |
           set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+          test "$VERSION" = "$(cat VERSION)" || { echo "Tag disagrees with VERSION"; exit 1; }
+          # A manually pushed tag must not publish arbitrary, unmerged
+          # development-branch code as the latest stable release.
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Refusing to release a commit not merged to main"
+            exit 1
+          }
           test "$(cat UPSTREAM_SOURCE_COMMIT)" = ce297cf53c05214bb2495e0b031d92b475229be3
           grep -Fq 'dockerps13/Node-Stable/releases' install.sh
           bash -n install.sh
+          bash tests/release-version-policy.sh
+          test -f third_party/sing-anytls/LICENSE
+      - name: Verify source and installer
+        run: |
+          set -euo pipefail
           go test -tags "with_quic with_utls with_wireguard with_acme with_clash_api" ./...
           bash tests/installer-safety.sh
           bash tests/limits-acceptance.sh
       - name: Build verified Linux packages
         run: |
           set -euo pipefail
-          make build-linux build-linux-arm64 VERSION=v1.0.3
-          ./xboard-node-linux-amd64 -v | grep -F v1.0.3
+          make build-linux build-linux-arm64 VERSION="$GITHUB_REF_NAME"
+          ./xboard-node-linux-amd64 -v | grep -F "$GITHUB_REF_NAME"
           ./xbctl-linux-amd64 --help
       - name: Package and verify
         run: |
@@ -45,12 +67,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view v1.0.3 >/dev/null 2>&1; then
-            echo "Existing v1.0.3 release: not overwriting"; exit 1
+          VERSION="$GITHUB_REF_NAME"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; refusing overwrite"
+            exit 1
           fi
-          gh release create v1.0.3 \
+          gh release create "$VERSION" \
             dist/xboard-node-linux-amd64 dist/xboard-node-linux-arm64 \
             dist/xbctl-linux-amd64 dist/xbctl-linux-arm64 \
             dist/install.sh dist/SOURCE_COMMIT dist/CHANGELOG dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --title "Node-Stable v1.0.3" --latest \
-            --notes "v1.0.3 enables automatic same-port TCP connection RTT probes for Hysteria2 and TUIC on panel-managed machine instances, unless kernel.tcp_probe is explicitly false. TCP Ping is not QUIC RTT. It preserves UDP transport, adds QUIC and config regression coverage and clearer TLS outage diagnostics. Cloud security groups must permit the TCP ports for external TCPing. Backup and verify before production upgrade; optional cross-VPS accounting features remain unvalidated."
+            --verify-tag --title "Node-Stable $VERSION" --latest \
+            --notes "Node-Stable $VERSION. See the packaged CHANGELOG and SOURCE_COMMIT for release changes and provenance. Review compatibility, security groups, backups, and rollback before deployment. Optional cross-machine accounting integrations are not automatically deployed."

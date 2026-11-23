@@ -1,7 +1,7 @@
 name: QUIC protocol and latency compatibility
 on:
   push:
-    branches: [main]
+    branches: [main, 'develop/**']
     paths:
       - 'internal/kernel/singbox/**'
       - 'internal/tcpprobe/**'
@@ -9,6 +9,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/quic-compat.yml'
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read

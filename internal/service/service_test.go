@@ -111,6 +111,84 @@ func newTestService(k *fakeKernel) *Service {
 	return s
 }
 
+// Regression: when a node initially has zero users, the first WS full sync
+// must start its kernel without requiring a service restart.
+func TestApplyUserUpdateStartsStoppedKernelWithFirstUser(t *testing.T) {
+	k := &fakeKernel{}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 21001}
+	users := []model.UserSpec{{ID: 2, UUID: "first-user", SpeedLimit: 8}}
+	hash := computeUserHash(users)
+
+	s.applyUserUpdate(context.Background(), users, hash)
+
+	if !k.IsRunning() || k.startCalls != 1 {
+		t.Fatalf("kernel running=%v startCalls=%d; want running and 1 start", k.IsRunning(), k.startCalls)
+	}
+	if k.updateCalls != 0 {
+		t.Fatalf("UpdateUsers calls=%d; initial users must be passed directly to Start", k.updateCalls)
+	}
+	if len(s.lastUsers) != 1 || s.lastUsers[0].UUID != "first-user" || s.lastUserHash != hash {
+		t.Fatalf("incoming users not committed: users=%#v hash=%q", s.lastUsers, s.lastUserHash)
+	}
+	if s.speedTracker.GetLimiter("first-user") == nil {
+		t.Fatal("first user's limiter not available after kernel start")
+	}
+}
+
+func TestApplyUserUpdateFirstUserStartFailureRollsBack(t *testing.T) {
+	k := &fakeKernel{startErr: errors.New("start failed")}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 21001}
+	users := []model.UserSpec{{ID: 2, UUID: "first-user", SpeedLimit: 8}}
+
+	s.applyUserUpdate(context.Background(), users, computeUserHash(users))
+
+	if k.IsRunning() || k.startCalls != 1 || len(s.lastUsers) != 0 || s.lastUserHash != "" {
+		t.Fatalf("failed bootstrap retained state: running=%v starts=%d users=%#v hash=%q", k.IsRunning(), k.startCalls, s.lastUsers, s.lastUserHash)
+	}
+	if s.speedTracker.GetLimiter("first-user") != nil {
+		t.Fatal("failed start retained first user's limiter")
+	}
+}
+
+// Regression: a delta add after an initial zero-user snapshot must start
+// the listener with the merged user list, rather than drop the update.
+func TestApplyUserDeltaStartsStoppedKernelWithFirstUser(t *testing.T) {
+	k := &fakeKernel{}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 21001}
+	delta := []model.UserSpec{{ID: 2, UUID: "delta-first", SpeedLimit: 8}}
+
+	s.applyUserDelta(context.Background(), "add", delta)
+
+	if !k.IsRunning() || k.startCalls != 1 || k.addCalls != 0 {
+		t.Fatalf("kernel running=%v starts=%d adds=%d; want running, 1 start, 0 adds", k.IsRunning(), k.startCalls, k.addCalls)
+	}
+	if len(s.lastUsers) != 1 || s.lastUsers[0].UUID != "delta-first" {
+		t.Fatalf("delta user not committed: %#v", s.lastUsers)
+	}
+	if s.speedTracker.GetLimiter("delta-first") == nil {
+		t.Fatal("delta user's limiter not available after kernel start")
+	}
+}
+
+func TestApplyUserDeltaFirstUserStartFailureRollsBack(t *testing.T) {
+	k := &fakeKernel{startErr: errors.New("start failed")}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", ServerPort: 21001}
+	delta := []model.UserSpec{{ID: 2, UUID: "delta-first", SpeedLimit: 8}}
+
+	s.applyUserDelta(context.Background(), "add", delta)
+
+	if k.IsRunning() || k.startCalls != 1 || len(s.lastUsers) != 0 || s.lastUserHash != "" {
+		t.Fatalf("failed delta bootstrap retained state: running=%v starts=%d users=%#v hash=%q", k.IsRunning(), k.startCalls, s.lastUsers, s.lastUserHash)
+	}
+	if s.speedTracker.GetLimiter("delta-first") != nil {
+		t.Fatal("failed delta start retained user's limiter")
+	}
+}
+
 func TestApplyUserUpdatePreparesLimiterBeforeKernelUpdate(t *testing.T) {
 	k := &fakeKernel{running: true}
 	s := newTestService(k)
