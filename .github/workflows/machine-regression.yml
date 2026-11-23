@@ -1,0 +1,39 @@
+name: Machine lifecycle and reporting regression
+
+on:
+  push:
+    branches: [main, 'develop/**']
+    paths:
+      - 'internal/machine/**'
+      - 'internal/controlplane/**'
+      - 'internal/panel/**'
+      - 'internal/service/**'
+      - 'internal/reportjournal/**'
+      - 'internal/devicegate/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/machine-regression.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Lifecycle, reporting and admission tests with race detector
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -timeout=20m ./internal/machine ./internal/controlplane ./internal/panel ./internal/reportjournal ./internal/devicegate
+      - name: Node service regression
+        run: |
+          go test -count=1 -timeout=12m ./internal/service
