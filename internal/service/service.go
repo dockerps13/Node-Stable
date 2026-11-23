@@ -971,7 +971,21 @@ func (s *Service) ensureRunning() bool {
 // applyUserUpdate replaces the full user set and hot-swaps the kernel.
 // Called from WS sync.users and REST polling.
 func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, newHash string) {
-	if !s.ensureRunning() {
+	// The initial snapshot may contain zero users. On the first subsequent WS
+	// user update, start with the incoming users rather than the stale empty
+	// s.lastUsers set. Only commit the new state after Start succeeds.
+	if !s.kernel.IsRunning() {
+		if len(users) == 0 || s.lastConfig == nil {
+			return
+		}
+		prevUsers, prevHash := s.prepareUserState(users)
+		if !s.startKernel(s.lastConfig, users) {
+			s.restoreUserState(prevUsers, prevHash)
+			return
+		}
+		if newHash != "" {
+			s.lastUserHash = newHash
+		}
 		return
 	}
 
@@ -1006,7 +1020,16 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 		}
 		merged := mergeUsers(s.lastUsers, deltaUsers)
 
-		if !s.ensureRunning() {
+		// Bootstrap a stopped kernel with the merged state, including the
+		// first delta-added user. A running kernel still uses hot AddUsers.
+		if !s.kernel.IsRunning() {
+			if len(merged) == 0 || s.lastConfig == nil {
+				return
+			}
+			prevUsers, prevHash := s.prepareUserState(merged)
+			if !s.startKernel(s.lastConfig, merged) {
+				s.restoreUserState(prevUsers, prevHash)
+			}
 			return
 		}
 
