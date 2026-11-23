@@ -5,6 +5,7 @@ on:
     branches: [main, 'develop/**']
     paths:
       - 'internal/machine/**'
+      - 'tests/staging-machine-smoke.sh'
       - 'internal/controlplane/**'
       - 'internal/panel/**'
       - 'internal/service/**'
@@ -30,6 +31,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Validate staging smoke script and safe argument handling
+        run: |
+          set -euo pipefail
+          bash -n tests/staging-machine-smoke.sh
+          bash tests/staging-machine-smoke.sh --help >/dev/null
+          if bash tests/staging-machine-smoke.sh --machine-id not-a-number --expected-nodes 11; then
+            echo 'Invalid staging machine ID was accepted' >&2
+            exit 1
+          fi
       - name: Lifecycle, reporting and admission tests with race detector
         run: |
           set -euo pipefail
