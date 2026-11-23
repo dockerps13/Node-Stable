@@ -181,7 +181,11 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		if err == nil {
 			err = fmt.Errorf("panel returned empty node config")
 		}
-		nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		if nodeCtx.Err() != nil {
+			nlog.Core().Info("machine: startup cancelled during config fetch", "node_id", mn.ID)
+		} else {
+			nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		}
 		cancel()
 		o.removeHandleIfCurrent(mn.ID, done)
 		o.unregisterNode(mn.ID, mb)
@@ -239,6 +243,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	launched = true
 	go func() {
 		defer close(done)
+		defer cancel()
 		defer o.unregisterNode(mn.ID, mb)
 		// Reap the handle even on unexpected initial setup or runtime exit.
 		// Otherwise rediscovery sees a stale node ID and never retries it.
