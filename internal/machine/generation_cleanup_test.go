@@ -1,6 +1,7 @@
 package machine
 
 import (
+    "context"
     "testing"
 
     "github.com/cedar2025/xboard-node/internal/controlplane"
@@ -44,5 +45,29 @@ func TestUnregisterNodePreservesUnrelatedSubscribers(t *testing.T) {
     o.unregisterNode(25,old)
     if o.mailboxes[18]==nil || o.statuses[18]==nil {
         t.Fatal("unregister changed a different node's resources")
+    }
+}
+
+func TestStopNodeDoesNotDeleteNewGenerationSubscriptions(t *testing.T) {
+    const nodeID=25
+    oldMailbox:=controlplane.NewNodeMailbox()
+    newMailbox:=controlplane.NewNodeMailbox()
+    ctx,cancel:=context.WithCancel(context.Background())
+    defer cancel()
+    done:=make(chan struct{})
+    close(done)
+    newStatus:=make(chan controlplane.StatusChange,1)
+    o:=&Orchestrator{
+        nodes:map[int]*nodeHandle{nodeID:{cancel:cancel,done:done,mailbox:oldMailbox}},
+        mailboxes:map[int]*controlplane.NodeMailbox{nodeID:newMailbox},
+        statuses:map[int]chan<- controlplane.StatusChange{nodeID:newStatus},
+    }
+    o.stopNode(nodeID,"test_stop")
+    if ctx.Err()!=context.Canceled {t.Fatal("old node was not cancelled")}
+    if o.mailboxes[nodeID]!=newMailbox {
+        t.Fatal("stopNode removed the replacement mailbox")
+    }
+    if o.statuses[nodeID]!=newStatus {
+        t.Fatal("stopNode removed the replacement status channel")
     }
 }
