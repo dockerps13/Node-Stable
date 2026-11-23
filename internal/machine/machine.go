@@ -229,7 +229,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	go func() {
 		defer close(done)
-		defer o.unregisterNode(mn.ID)
+		defer o.unregisterNode(mn.ID, mb)
 		// Reap the handle even on unexpected initial setup or runtime exit.
 		// Otherwise rediscovery sees a stale node ID and never retries it.
 		defer o.removeHandleIfCurrent(mn.ID, done)
@@ -546,11 +546,17 @@ func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusCha
 	o.eventsMu.Unlock()
 }
 
-func (o *Orchestrator) unregisterNode(nodeID int) {
+// unregisterNode removes only the resources belonging to the exiting
+// service generation. A replacement may already have registered its mailbox
+// and status channel by the time an old service finishes shutting down.
+func (o *Orchestrator) unregisterNode(nodeID int, mailbox *controlplane.NodeMailbox) {
 	o.eventsMu.Lock()
+	defer o.eventsMu.Unlock()
+	if o.mailboxes[nodeID] != mailbox {
+		return
+	}
 	delete(o.mailboxes, nodeID)
 	delete(o.statuses, nodeID)
-	o.eventsMu.Unlock()
 }
 
 func (o *Orchestrator) applyIntervals(bc panel.MachineBaseConfig) {
