@@ -178,15 +178,21 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		o.unregisterNode(mn.ID, mb)
 		return
 	}
-	// Persist the per-node kernel so WS updates are validated against the
-	// kernel actually running, not the global machine default.
+	// A slow initial GetConfig may outlive a discovery removal and even a
+	// replacement startup. Never launch a retired generation after the fetch.
 	o.mu.Lock()
-	if active, ok := o.nodes[mn.ID]; ok && active == h {
-		active.kernelType = nodeCfg.Kernel.Type
-		if initialSnapshot != nil {
-			active.revision = initialSnapshot.RuntimeRevision
-			active.obfsEnabled = initialSnapshot.Plugin != ""
-		}
+	active, stillCurrent := o.nodes[mn.ID]
+	if !stillCurrent || active != h || nodeCtx.Err() != nil {
+		o.mu.Unlock()
+		cancel()
+		o.unregisterNode(mn.ID, mb)
+		return
+	}
+	// Persist the kernel that this exact service generation will run.
+	h.kernelType = nodeCfg.Kernel.Type
+	if initialSnapshot != nil {
+		h.revision = initialSnapshot.RuntimeRevision
+		h.obfsEnabled = initialSnapshot.Plugin != ""
 	}
 	o.mu.Unlock()
 
