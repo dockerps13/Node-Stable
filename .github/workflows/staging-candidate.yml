@@ -1,0 +1,66 @@
+name: Build isolated v1.0.4 staging candidate
+
+# This is a CI artifact, NOT a published release or a deployment.
+# No panel URL, credentials or remote access is configured in this workflow.
+on:
+  push:
+    branches: [develop/v1.0.4-hardening]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'install.sh'
+      - 'tests/**'
+      - '.github/workflows/staging-candidate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: staging-linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate source and installer
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash -n tests/staging-machine-smoke.sh
+          bash -n tests/staging-machine-smoke-test.sh
+          bash tests/staging-machine-smoke-test.sh
+          bash tests/release-version-policy.sh
+      - name: Build candidate binaries
+        run: |
+          set -euo pipefail
+          make build-linux${{ matrix.arch == 'arm64' && '-arm64' || '' }} VERSION=v1.0.4
+          ./xboard-node-linux-${{ matrix.arch }} -v || {
+            if [[ "${{ matrix.arch }}" == "amd64" ]]; then exit 1; fi
+          }
+      - name: Assemble checksum-verifiable staging package
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          cp "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh staging/
+          printf '%s\n' "$GITHUB_SHA" > staging/SOURCE_COMMIT
+          printf '%s\n' 'UNRELEASED TEST CANDIDATE — use only on isolated staging VPS and panel; no official v1.0.4 Release exists.' > staging/STAGING_ONLY.txt
+          (cd staging && sha256sum "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh SOURCE_COMMIT STAGING_ONLY.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Node-Stable-v1.0.4-STAGING-linux-${{ matrix.arch }}-${{ github.sha }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 14
