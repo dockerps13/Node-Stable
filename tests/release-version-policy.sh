@@ -14,6 +14,7 @@ matrix='.github/workflows/multiplatform.yml'
 grep -Fq 'tags:' "$release"
 grep -Fq 'test "$VERSION" = "$(cat VERSION)"' "$release"
 grep -Fq 'gh release create "$VERSION"' "$release"
+grep -Fq 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' "$release"
 grep -Fq 'VERSION="$(cat VERSION)"' "$matrix"
 if grep -Eq 'main.version=v[0-9]+\.[0-9]+\.[0-9]+' "$matrix"; then
   echo "Hardcoded binary version found in multiplatform workflow" >&2
