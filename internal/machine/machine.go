@@ -162,7 +162,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	// Inspect full node capabilities before launching an inbound. Never
 	// silently ignore unsupported protocol features (e.g. SS simple-obfs).
-	if cfgSnapshot, err := perNodeClient.GetConfig(); err == nil && cfgSnapshot != nil {
+	if cfgSnapshot, err := perNodeClient.GetConfigContext(nodeCtx); err == nil && cfgSnapshot != nil {
 		initialSnapshot = cfgSnapshot
 		resolved, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(cfgSnapshot), nodeCfg.Kernel.Type)
 		if selectErr != nil {
