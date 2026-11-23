@@ -47,23 +47,16 @@ bash staging-preflight.sh --panel 'https://staging-panel.example.net' --machine-
 
 The preflight refuses production panel hostnames, production machine ID 24, non-Debian-12 hosts and machines with existing node credentials or config. It cannot prove the staging database is separate — verify that manually in your isolated panel.
 
-Only on this **disposable test VPS**, install the test candidate from the verified **local** binaries:
+Only on this **disposable test VPS**, use the packaged **guarded installer** (it checks checksums, panel hostname, OS, machine ID, existing installation, and asks for a new staging token interactively):
 
 ```bash
 cd /root/node-stable-staging
-read -rsp 'New staging-only machine token: ' STAGING_TOKEN; echo
-bash install.sh install \
-  --mode machine \
+bash staging-install.sh \
   --panel 'https://staging-panel.example.net' \
-  --machine-id 99 \
-  --token "$STAGING_TOKEN" \
-  --version v1.0.4 \
-  --binary "$PWD/xboard-node-linux-amd64" \
-  --xbctl-binary "$PWD/xbctl-linux-amd64"
-unset STAGING_TOKEN
+  --machine-id 99
 ```
 
-For ARM64, substitute both binary filenames. **Do not paste your real token into chat or GitHub logs.** Tokens supplied as CLI flags may be briefly visible in the server process list; run from a private SSH session, not a shared host. The installer handles configuration and service startup; it modifies this **test VPS only**.
+Replace the example values with your **actual isolated** staging panel and ID. Do not use a production token. For ARM64, the script automatically chooses the `arm64` binary. The installer writes root-only credentials to this **test VPS**. The Token is passed to the original installer as a CLI option and may be briefly visible to local process inspectors; use a private dedicated VPS/SSH session. Keep the downloaded ZIP and its SHA256SUMS for repeatable rollback tests.
 
 If the panel is not yet configured with matching machine ID and node assignments, the service may fail discovery and installation health checks. Configure the **isolated staging panel first**.
 
