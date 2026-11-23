@@ -59,4 +59,31 @@ fi
 if bash "$here/staging-machine-smoke.sh" --machine-id wrong --expected-nodes 2 >/dev/null 2>&1; then
   echo 'invalid machine id accepted' >&2; exit 1
 fi
-echo 'Staging smoke parser tests passed'
+# Simulate a complete 11-protocol machine in the CI runner without
+# connecting to any real XBoard panel or opening proxy ports.
+cat > "$tmp/journal-11" <<'EOF'
+06:21:02.817 INFO [core] machine 99: discovered 11 nodes
+EOF
+protocols=(vless shadowsocks trojan hysteria tuic vmess http socks anytls mieru naive)
+for i in "${!protocols[@]}"; do
+  id=$((i+11))
+  printf '06:21:07.942 INFO [core] machine: starting node %d (%s/staging)\n' "$id" "${protocols[i]}" >> "$tmp/journal-11"
+  printf '06:22:26.966 INFO [%s:9000] report pushed node_id=%d machine_id=99 traffic_users=0 online=0\n' "${protocols[i]}" "$id" >> "$tmp/journal-11"
+done
+export STAGING_FIXTURE_LOG="$tmp/journal-11" STAGING_FIXTURE_SOCKETS="$tmp/sockets"
+bash "$here/staging-machine-smoke.sh" \
+  --machine-id 99 --expected-nodes 11 \
+  --expected-ids 11,12,13,14,15,16,17,18,19,20,21 \
+  --expected-version v1.0.4 --since "20 minutes ago" > "$tmp/eleven-output"
+grep -Fq 'PASS: read-only staging smoke checks completed' "$tmp/eleven-output" || {
+  echo 'complete 11-node staging fixture rejected' >&2; exit 1;
+}
+grep -v 'report pushed node_id=21 ' "$tmp/journal-11" > "$tmp/journal-11-missing"
+export STAGING_FIXTURE_LOG="$tmp/journal-11-missing"
+if bash "$here/staging-machine-smoke.sh" \
+  --machine-id 99 --expected-nodes 11 \
+  --expected-ids 11,12,13,14,15,16,17,18,19,20,21 \
+  --expected-version v1.0.4 > /dev/null 2>&1; then
+  echo '11-node fixture missing the Naive report was accepted' >&2; exit 1
+fi
+echo 'Staging smoke parser and isolated 11-node fixture tests passed'
