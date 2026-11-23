@@ -137,12 +137,14 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nodeCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	mb := controlplane.NewNodeMailbox()
-	o.nodes[mn.ID] = &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
-	o.mu.Unlock()
-
+	h := &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
+	o.nodes[mn.ID] = h
+	// Publish the matching handle and mailbox atomically with respect to
+	// start/stop. An older in-flight startup must not replace this mailbox.
 	o.eventsMu.Lock()
 	o.mailboxes[mn.ID] = mb
 	o.eventsMu.Unlock()
+	o.mu.Unlock()
 
 	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
 
@@ -157,12 +159,8 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		if selectErr != nil {
 			nlog.Core().Error(fmt.Sprintf("machine: node %d not started: %v", mn.ID, selectErr))
 			cancel()
-			o.mu.Lock()
-			delete(o.nodes, mn.ID)
-			o.mu.Unlock()
-			o.eventsMu.Lock()
-			delete(o.mailboxes, mn.ID)
-			o.eventsMu.Unlock()
+			o.removeHandleIfCurrent(mn.ID, done)
+			o.unregisterNode(mn.ID, mb)
 			return
 		}
 		if resolved != nodeCfg.Kernel.Type {
@@ -176,22 +174,18 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		}
 		nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
 		cancel()
-		o.mu.Lock()
-		delete(o.nodes, mn.ID)
-		o.mu.Unlock()
-		o.eventsMu.Lock()
-		delete(o.mailboxes, mn.ID)
-		o.eventsMu.Unlock()
+		o.removeHandleIfCurrent(mn.ID, done)
+		o.unregisterNode(mn.ID, mb)
 		return
 	}
 	// Persist the per-node kernel so WS updates are validated against the
 	// kernel actually running, not the global machine default.
 	o.mu.Lock()
-	if h, ok := o.nodes[mn.ID]; ok {
-		h.kernelType = nodeCfg.Kernel.Type
+	if active, ok := o.nodes[mn.ID]; ok && active == h {
+		active.kernelType = nodeCfg.Kernel.Type
 		if initialSnapshot != nil {
-			h.revision = initialSnapshot.RuntimeRevision
-			h.obfsEnabled = initialSnapshot.Plugin != ""
+			active.revision = initialSnapshot.RuntimeRevision
+			active.obfsEnabled = initialSnapshot.Plugin != ""
 		}
 	}
 	o.mu.Unlock()
@@ -211,7 +205,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	// the node mailbox + status channel to the Service.
 	nodeID := mn.ID
 	registerFn := func(st chan<- controlplane.StatusChange) *controlplane.NodeMailbox {
-		o.registerNode(nodeID, st)
+		o.registerNode(nodeID, mb, st)
 		return mb
 	}
 
@@ -540,9 +534,12 @@ func (o *Orchestrator) onWSStatus(status panel.WSStatusChange) {
 	}
 }
 
-func (o *Orchestrator) registerNode(nodeID int, st chan<- controlplane.StatusChange) {
+// registerNode refuses stale callbacks from a retired service generation.
+func (o *Orchestrator) registerNode(nodeID int, mailbox *controlplane.NodeMailbox, st chan<- controlplane.StatusChange) {
 	o.eventsMu.Lock()
-	o.statuses[nodeID] = st
+	if o.mailboxes[nodeID] == mailbox {
+		o.statuses[nodeID] = st
+	}
 	o.eventsMu.Unlock()
 }
 
