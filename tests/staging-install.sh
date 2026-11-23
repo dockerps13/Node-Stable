@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ONLY for a NEW disposable Debian 12 staging VPS.
+# ONLY for a NEW disposable Debian 11 or 12 staging VPS.
 # Refuses known production identities and existing xboard-node installations.
 set -Eeuo pipefail
 umask 077
@@ -7,7 +7,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 Usage: bash staging-install.sh --panel https://your-independent-staging-panel.example --machine-id NEW_STAGING_ID
-Run on the NEW Debian 12 staging VPS as root. A staging-only token is read
+Run on the NEW Debian 11 or 12 staging VPS as root. A staging-only token is read
 privately from the terminal. No production panel/ID or existing installation.
 EOF
 }
