@@ -1,14 +1,16 @@
-# Debian 12 isolated VPS acceptance — Node-Stable v1.0.4 candidate
+# Debian 11/12 isolated VPS acceptance — Node-Stable v1.0.4 candidate
 
 This is a **staging-only** guide. v1.0.4 is not yet a GitHub Release. Do not use `releases/download/v1.0.4`, `--version latest` or the current production XBoard machine as staging.
 
 ## 1. Provision a disposable server
 
-Create a **NEW** Debian 12 amd64 VPS (2 vCPU / 2–4 GiB RAM / 30 GiB disk are reasonable minimum staging specs, not a performance guarantee). Select an SSH key, keep a separate SSH session, and use a NEW public IP. Start with port **22/TCP restricted to your own IP**. Do not allow unrestricted inbound 11-protocol ports: open each needed test port and TCP/UDP transport deliberately.
+Use a **dedicated** Debian 11 or Debian 12 amd64 VPS (2 vCPU / 2–4 GiB RAM / 30 GiB disk are reasonable minimum staging specs, not a performance guarantee). Select an SSH key, keep a separate SSH session, and use a NEW public IP. Restrict SSH to your own IP; this existing test VPS uses **23714/TCP** for SSH. Do not assume the default port is 22. Do not allow unrestricted inbound 11-protocol ports: open each needed test port and TCP/UDP transport deliberately.
 
 The staging panel must have a **different HTTPS hostname and independent database, cache/Redis, admin login, machine token, machine ID, node assignments and test user accounts** from production. Running a separately configured panel in a container on the staging host is acceptable, but prevent panel/proxy TCP port collisions. This repository does **not** provision a production-compatible Laravel/XBoard panel automatically. Obtain a working isolated panel first; otherwise only run GitHub CI and offline mocks.
 
 **Never** connect the test node to `https://soulook.org`, use production machine ID `24`, or import production database/Redis/credentials. Cloud firewall controls are separate from `ufw`/system firewalls.
+
+**Debian 11 note (November 2026):** Debian 11 official LTS security updates ended on 31 August 2026. This VPS must remain short-lived, SSH-limited and contain no production data, secrets or real users. Linux binaries are built with CGO disabled, but compatibility still needs runtime smoke testing. For this test VPS: 192.220.0.198, SSH port 23714, AMD64. Do not publish server login credentials.
 
 ## 2. Download the candidate built by GitHub (no Go toolchain needed on VPS)
 
@@ -16,11 +18,11 @@ The staging panel must have a **different HTTPS hostname and independent databas
 2. Select the **latest successful run on `develop/v1.0.4-hardening`**. Under **Artifacts**, download the `linux-amd64` candidate ZIP (or `linux-arm64` for an ARM64 VPS). Confirm the run commit matches the intended reviewed PR commit.
 3. Transfer that ZIP from your local computer to the **new test VPS**, e.g. with SSH/SCP. On a Windows PowerShell terminal:
    ```powershell
-   scp "$env:USERPROFILE\Downloads\<ACTUAL_ARTIFACT_NAME>.zip" root@<STAGING_VPS_IP>:/root/node-stable-staging.zip
+   scp -P 23714 "$env:USERPROFILE\Downloads\<ACTUAL_ARTIFACT_NAME>.zip" root@192.220.0.198:/root/node-stable-staging.zip
    ```
-   Replace placeholders with the **actual download name and test VPS IP**. Do not upload SSH keys or panel tokens.
+   Replace the artifact-name placeholder with the actual filename. For this test VPS, the SSH port is 23714. Do not upload SSH keys or panel tokens.
 
-On the **new Debian 12 VPS** as root:
+On the **isolated Debian 11 or 12 VPS** as root:
 ```bash
 apt-get update
 apt-get install -y unzip ca-certificates curl
@@ -45,9 +47,9 @@ cd /root/node-stable-staging
 bash staging-preflight.sh --panel 'https://staging-panel.example.net' --machine-id 99
 ```
 
-The preflight refuses production panel hostnames, production machine ID 24, non-Debian-12 hosts and machines with existing node credentials or config. It cannot prove the staging database is separate — verify that manually in your isolated panel.
+The preflight refuses production panel hostnames, production machine ID 24, hosts other than Debian 11/12 and machines with existing node credentials or config. It cannot prove the staging database is separate — verify that manually in your isolated panel.
 
-Only on this **disposable test VPS**, use the packaged **guarded installer** (it checks checksums, panel hostname, OS, machine ID, existing installation, and asks for a new staging token interactively):
+Only on this **isolated test VPS**, use the packaged **guarded installer** (it checks checksums, panel hostname, OS, machine ID, existing installation, and asks for a new staging token interactively):
 
 ```bash
 cd /root/node-stable-staging
