@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 80
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -28,6 +30,13 @@ jobs:
           VERSION="${GITHUB_REF_NAME}"
           [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
           test "$VERSION" = "$(cat VERSION)" || { echo "Tag disagrees with VERSION"; exit 1; }
+          # A manually pushed tag must not publish arbitrary, unmerged
+          # development-branch code as the latest stable release.
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Refusing to release a commit not merged to main"
+            exit 1
+          }
           test "$(cat UPSTREAM_SOURCE_COMMIT)" = ce297cf53c05214bb2495e0b031d92b475229be3
           grep -Fq 'dockerps13/Node-Stable/releases' install.sh
           bash -n install.sh
