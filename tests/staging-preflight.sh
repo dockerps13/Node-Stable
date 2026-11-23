@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only guard. Run only on a NEW, disposable Debian 12 staging VPS.
+# Read-only guard. Run only on a NEW, disposable Debian 11 or 12 staging VPS.
 set -Eeuo pipefail
 fail(){ echo "FAIL: $*" >&2; exit 1; }
 panel=""; machine_id=""
@@ -19,7 +19,10 @@ host="${host,,}"
 [[ "$host" != "soulook.org" && "$host" != *.soulook.org ]] || fail "production panel domain is forbidden"
 [[ -r /etc/os-release ]] || fail "cannot detect Debian system"
 . /etc/os-release
-[[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12 ]] || fail "requires Debian 12 staging VPS"
+[[ "${ID:-}" == debian && ( "${VERSION_ID:-}" == 11 || "${VERSION_ID:-}" == 12 ) ]] || fail "requires an isolated Debian 11 or 12 staging VPS"
+if [[ "${VERSION_ID}" == 11 ]]; then
+  echo "WARN: Debian 11 standard LTS ended 2026-08-31. Restrict access and use only for short-lived isolated staging." >&2
+fi
 if command -v systemctl >/dev/null; then
   if systemctl is-active --quiet xboard-node 2>/dev/null; then
     fail "xboard-node already running: never replace a current installation"
@@ -28,6 +31,6 @@ fi
 [[ ! -e /etc/xboard-node/config.yml ]] || fail "existing xboard-node config found"
 [[ ! -e /etc/xboard-node/credentials.env ]] || fail "existing credentials found"
 [[ ! -e /etc/xboard-node/instances ]] || fail "existing instance data found"
-printf 'PASS: Debian 12, staging machine ID %s, non-production panel host %s\n' "$machine_id" "$host"
+printf 'PASS: Debian %s, staging machine ID %s, non-production panel host %s\n' "$VERSION_ID" "$machine_id" "$host"
 echo "PASS: no active xboard-node service or node installation data found"
 echo "NOTE: this is NOT proof panel/database/users are isolated; verify those separately before install."
