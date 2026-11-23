@@ -136,6 +136,15 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 
 	nodeCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	// The handle exists before its config fetch finishes. If startup is
+	// aborted during the fetch, stopNode must still be able to join it.
+	// Once the service goroutine starts, that goroutine owns closing done.
+	launched := false
+	defer func() {
+		if !launched {
+			close(done)
+		}
+	}()
 	mb := controlplane.NewNodeMailbox()
 	h := &nodeHandle{cancel: cancel, done: done, mailbox: mb, kernelType: "", node: mn}
 	o.nodes[mn.ID] = h
@@ -227,6 +236,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
 
+	launched = true
 	go func() {
 		defer close(done)
 		defer o.unregisterNode(mn.ID, mb)
