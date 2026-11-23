@@ -41,23 +41,32 @@ jobs:
           bash -n install.sh
           bash -n tests/staging-machine-smoke.sh
           bash -n tests/staging-machine-smoke-test.sh
+          bash -n tests/staging-preflight.sh
+          bash tests/staging-preflight.sh --help >/dev/null
           bash tests/staging-machine-smoke-test.sh
           bash tests/release-version-policy.sh
       - name: Build candidate binaries
         run: |
           set -euo pipefail
           make build-linux${{ matrix.arch == 'arm64' && '-arm64' || '' }} VERSION=v1.0.4
-          ./xboard-node-linux-${{ matrix.arch }} -v || {
-            if [[ "${{ matrix.arch }}" == "amd64" ]]; then exit 1; fi
-          }
+          if [[ "${{ matrix.arch }}" == "amd64" ]]; then
+            ./xboard-node-linux-amd64 -v | grep -F 'v1.0.4'
+            ./xbctl-linux-amd64 version
+          else
+            test -s xboard-node-linux-arm64
+            test -s xbctl-linux-arm64
+          fi
       - name: Assemble checksum-verifiable staging package
         run: |
           set -euo pipefail
           mkdir -p staging
           cp "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh staging/
+          cp tests/staging-machine-smoke.sh staging/staging-machine-smoke.sh
+          cp tests/staging-preflight.sh staging/staging-preflight.sh
+          cp docs/debian12-isolated-staging.md staging/README-STAGING.md
           printf '%s\n' "$GITHUB_SHA" > staging/SOURCE_COMMIT
           printf '%s\n' 'UNRELEASED TEST CANDIDATE — use only on isolated staging VPS and panel; no official v1.0.4 Release exists.' > staging/STAGING_ONLY.txt
-          (cd staging && sha256sum "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh SOURCE_COMMIT STAGING_ONLY.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
+          (cd staging && sha256sum "xboard-node-linux-${{ matrix.arch }}" "xbctl-linux-${{ matrix.arch }}" install.sh staging-machine-smoke.sh staging-preflight.sh README-STAGING.md SOURCE_COMMIT STAGING_ONLY.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@v4
         with:
           name: Node-Stable-v1.0.4-STAGING-linux-${{ matrix.arch }}-${{ github.sha }}
