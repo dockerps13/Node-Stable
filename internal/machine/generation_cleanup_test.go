@@ -71,3 +71,51 @@ func TestStopNodeDoesNotDeleteNewGenerationSubscriptions(t *testing.T) {
         t.Fatal("stopNode removed the replacement status channel")
     }
 }
+
+func TestStaleStatusRegistrationDoesNotReplaceActiveGeneration(t *testing.T) {
+    const nodeID=25
+    activeMailbox:=controlplane.NewNodeMailbox()
+    retiredMailbox:=controlplane.NewNodeMailbox()
+    activeStatus:=make(chan controlplane.StatusChange,1)
+    retiredStatus:=make(chan controlplane.StatusChange,1)
+    o:=&Orchestrator{
+        mailboxes:map[int]*controlplane.NodeMailbox{nodeID:activeMailbox},
+        statuses:map[int]chan<- controlplane.StatusChange{},
+    }
+    o.registerNode(nodeID,retiredMailbox,retiredStatus)
+    if _,exists:=o.statuses[nodeID];exists {
+        t.Fatal("late callback from retired service registered a status subscriber")
+    }
+    o.registerNode(nodeID,activeMailbox,activeStatus)
+    if o.statuses[nodeID]!=activeStatus {
+        t.Fatal("active generation status subscriber was not registered")
+    }
+    o.registerNode(nodeID,retiredMailbox,retiredStatus)
+    if o.statuses[nodeID]!=activeStatus {
+        t.Fatal("retired generation replaced current status channel")
+    }
+}
+
+func TestFailedStartupCleanupDoesNotDeleteReplacement(t *testing.T) {
+    const nodeID=25
+    oldMailbox:=controlplane.NewNodeMailbox()
+    newMailbox:=controlplane.NewNodeMailbox()
+    oldDone:=make(chan struct{})
+    newDone:=make(chan struct{})
+    currentStatus:=make(chan controlplane.StatusChange,1)
+    o:=&Orchestrator{
+        nodes:map[int]*nodeHandle{nodeID:{done:newDone,mailbox:newMailbox}},
+        mailboxes:map[int]*controlplane.NodeMailbox{nodeID:newMailbox},
+        statuses:map[int]chan<- controlplane.StatusChange{nodeID:currentStatus},
+    }
+    // Simulate an old initial GetConfig completing unsuccessfully only after
+    // another service generation was installed for the same machine node.
+    o.removeHandleIfCurrent(nodeID,oldDone)
+    o.unregisterNode(nodeID,oldMailbox)
+    if o.nodes[nodeID]==nil || o.nodes[nodeID].done!=newDone {
+        t.Fatal("old config-fetch cleanup removed replacement handle")
+    }
+    if o.mailboxes[nodeID]!=newMailbox || o.statuses[nodeID]!=currentStatus {
+        t.Fatal("old config-fetch cleanup removed replacement event state")
+    }
+}
