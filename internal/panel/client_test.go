@@ -359,3 +359,42 @@ func TestGlobalDevicesSnapshot(t *testing.T) {
 		t.Fatal("null snapshot accepted")
 	}
 }
+
+func TestReportOnlineSnapshotWireFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		online  map[int]int
+		present bool
+		want    string
+	}{
+		{name: "nil omits snapshot", online: nil, present: false},
+		{name: "empty clears panel count", online: map[int]int{}, present: true, want: "{}"},
+		{name: "nonempty snapshot", online: map[int]int{123: 2}, present: true, want: "{\"123\":2}"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var received map[string]json.RawMessage
+			ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/v2/server/report" || r.Method != http.MethodPost {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+					t.Errorf("decode report: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"data":true}`))
+			})
+			defer ts.Close()
+			if err := client.ReportWithBatchID("", nil, nil, tc.online, 0, [2]uint64{}, [2]uint64{}, [2]uint64{}, nil); err != nil {
+				t.Fatalf("ReportWithBatchID: %v", err)
+			}
+			got, ok := received["online"]
+			if ok != tc.present {
+				t.Fatalf("online present=%v, want %v", ok, tc.present)
+			}
+			if ok && string(got) != tc.want {
+				t.Errorf("online=%s, want %s", got, tc.want)
+			}
+		})
+	}
+}
