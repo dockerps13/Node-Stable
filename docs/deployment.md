@@ -8,7 +8,7 @@ Linux with systemd, supported CPU architecture (published Linux amd64/arm64 bina
 
 ## Release integrity and safe staging
 
-For v1.0.3, retrieve the following files from the **same GitHub Release**: `install.sh`, `SOURCE_COMMIT`, `SHA256SUMS`, `xboard-node-linux-amd64` or `xboard-node-linux-arm64`, and the matching `xbctl` binary. Verify `sha256sum -c SHA256SUMS` in a directory containing all listed assets. The manifest protects against accidental corruption but does not replace independent signature verification.
+For the pinned release you intend to deploy (v1.0.4 after it is published), retrieve the following files from the **same GitHub Release**: `install.sh`, `SOURCE_COMMIT`, `SHA256SUMS`, `xboard-node-linux-amd64` or `xboard-node-linux-arm64`, and the matching `xbctl` binary. Verify `sha256sum -c SHA256SUMS` in a directory containing all listed assets. The manifest protects against accidental corruption but does not replace independent signature verification.
 
 ```bash
 curl -fL https://github.com/dockerps13/Node-Stable/releases/download/v1.0.3/install.sh -o /root/node-stable-v103.sh
@@ -62,6 +62,15 @@ For panel-managed machines with Hysteria2/TUIC:
 ## Certificates
 
 ACME certificates are bound to the requested hostname and matching private key. Never substitute a certificate for a different hostname. Keep machine-wide shared ACME storage intact across upgrades, and obey CA HTTP 429 `Retry-After`. See [ACME recovery](acme-rate-limit-recovery.md).
+
+
+## v1.0.4 rollout considerations
+
+v1.0.4 introduces coalesced device-change refresh and explicit empty online snapshots so the panel can clear stale node presence. Verify the panel API accepts the `online` payload and preserves ordinary traffic reporting. A non-`nil` empty snapshot is intentional.
+
+The optional `report_id` idempotent billing protocol requires a separately deployed, migrated and tested Laravel panel patch; it is **not** installed by this repository's node installer. Keep the panel feature off until its migration, transaction handling, authentication and duplicate/conflict behavior are verified. Do not remove durable report receipts or node report journals as part of rollback without understanding replay consequences.
+
+Before enabling on production, confirm both sides support the same reporting protocol, capture backup/rollback procedures and observe a small controlled cohort. Race testing on GitHub CI is a release gate; a skipped GCC test on a running VPS is not a passing race test.
 
 ## Limits and integrations
 
