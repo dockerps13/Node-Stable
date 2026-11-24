@@ -158,7 +158,10 @@ func (c *Client) ReportWithBatchID(batchID string, traffic map[int][2]int64, ali
 		}()
 	}
 
-	if len(online) > 0 {
+	// A non-nil online map is a complete snapshot. An empty map must be
+	// sent as {} to clear stale per-node online counts on the panel.
+	// Nil means this report has no online snapshot (e.g. a journal retry).
+	if online != nil {
 		o := onlineMapPool.Get().(map[string]int)
 		for uid, count := range online {
 			o[strconv.Itoa(uid)] = count
