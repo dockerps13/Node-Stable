@@ -1,0 +1,54 @@
+name: v1.0.4 pre-release acceptance
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'tests/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'install.sh'
+      - 'Makefile'
+      - '.github/workflows/release-stable.yml'
+      - '.github/workflows/multiplatform.yml'
+      - '.github/workflows/release-acceptance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Syntax and installer safety
+        run: |
+          set -euo pipefail
+          bash -n install.sh
+          bash tests/installer-safety.sh
+          bash tests/limits-acceptance.sh
+      - name: Go complete tests with production tags
+        run: |
+          set -euo pipefail
+          go test -count=1 -timeout=15m -tags "with_quic with_utls with_wireguard with_acme with_clash_api" ./...
+      - name: Go race tests for report and device state
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          set -euo pipefail
+          command -v gcc
+          go test -race -count=1 -timeout=12m -tags "with_quic with_utls with_wireguard with_acme with_clash_api" ./internal/service ./internal/panel ./internal/machine
+      - name: Build release targets without publishing
+        run: |
+          set -euo pipefail
+          make build-linux build-linux-arm64 VERSION=v1.0.4
+          ./xboard-node-linux-amd64 -v | grep -F v1.0.4
+          ./xbctl-linux-amd64 --help
+          go version -m xboard-node-linux-amd64
+          sha256sum xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64

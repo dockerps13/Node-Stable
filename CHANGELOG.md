@@ -2,6 +2,15 @@
 
 Release artifacts, source SHAs and checksums: [Node-Stable Releases](https://github.com/dockerps13/Node-Stable/releases). This file describes the maintained **Node-Stable** distribution; historical candidate documents are preserved in Git history, not published as current guidance.
 
+## v1.0.4 — 2026-11-25 (release candidate)
+
+- Refresh online device snapshots promptly after connection changes using a bounded, coalesced event notification; preserve billing traffic counters during the refresh.
+- Send an explicit empty `online: {}` map to clear stale per-node online counts; a missing (`nil`) snapshot still omits the field.
+- Preserve shared machine device admission callbacks and improve TLS certificate outage diagnostics without repetitive identical warnings.
+- Retain durable report IDs, verified idempotent billing receipts, crash/restart recovery, and safe handling of ambiguous legacy reports.
+- Release validation: Go tests with production QUIC/uTLS/WireGuard/ACME/Clash tags; PHP panel idempotent billing integration validated separately in an isolated test database. The optional Laravel patch is **not included** in the node release and is **not deployed by this workflow**.
+- Known limitation: Go race detection has not yet run in the production test environment because GCC was unavailable. Do not describe race coverage as passed.
+
 ## v1.0.3 — 2026-11-22 (stable)
 
 - **Machine mode:** automatically expose same-port TCP handshake latency probes for running Hysteria2 and TUIC UDP/QUIC nodes when `kernel.tcp_probe` is omitted. An explicit `false` disables the probe; single-node and standalone modes remain opt-in.

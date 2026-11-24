@@ -6,6 +6,8 @@
 
 ## Stable release
 
+**v1.0.4** — upcoming stable release: faster coalesced device-change snapshots, explicit empty online snapshots, improved TLS diagnostics, and retained idempotent report/retry safeguards. Release assets must be verified after GitHub Actions publishes them; do not deploy from an unverified branch. The Laravel idempotent billing patch is a separate, opt-in panel change and is not part of this node installer.
+
 **v1.0.3** — Linux `amd64` and `arm64` release assets, published 2026-11-22. Downloads are built from an immutable release commit and include `SOURCE_COMMIT` and `SHA256SUMS`. Check the release page for subsequent versions before installing.
 
 ### What's new in v1.0.3
