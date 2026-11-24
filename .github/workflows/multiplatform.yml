@@ -46,8 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -ldflags "-s -w -X main.version=v1.0.2 -X main.commit=${GITHUB_SHA}" -o "dist/xboard-node-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xboard-node
-          go build -ldflags "-s -w -X main.version=v1.0.2 -X main.commit=${GITHUB_SHA}" -o "dist/xbctl-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xbctl
+          go build -tags "with_quic with_utls with_wireguard with_acme with_clash_api" -ldflags "-s -w -X main.version=v1.0.4 -X main.commit=${GITHUB_SHA}" -o "dist/xboard-node-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xboard-node
+          go build -ldflags "-s -w -X main.version=v1.0.4 -X main.commit=${GITHUB_SHA}" -o "dist/xbctl-${{ matrix.name }}${{ matrix.ext }}" ./cmd/xbctl
       - uses: actions/upload-artifact@v4
         with:
           name: Node-Stable-${{ matrix.name }}
