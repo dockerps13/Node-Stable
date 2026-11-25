@@ -830,6 +830,9 @@ type trackedPacketConn struct {
 	N.PacketConn
 	// Keep the wrapper in the data path when a remote lease can revoke it.
 	strictRevocation bool
+	readMu sync.Mutex
+	activeReads int
+	underlyingClosed bool
 	tracker          *ConnTracker
 	us               *userStats
 	userID           int
@@ -866,7 +869,25 @@ func waitPacketBudget(ctx context.Context, limiter *rate.Limiter, n int) error {
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
-	if c.closed.Load() { return singM.Socksaddr{}, net.ErrClosed }
+	if c.strictRevocation {
+		c.readMu.Lock()
+		if c.closed.Load() {
+			c.readMu.Unlock()
+			return singM.Socksaddr{}, net.ErrClosed
+		}
+		c.activeReads++
+		c.readMu.Unlock()
+		defer func() {
+			c.readMu.Lock()
+			c.activeReads--
+			closeUnderlying := c.closed.Load() && c.activeReads == 0 && !c.underlyingClosed
+			if closeUnderlying { c.underlyingClosed = true }
+			c.readMu.Unlock()
+			if closeUnderlying { _ = c.PacketConn.Close() }
+		}()
+	} else if c.closed.Load() {
+		return singM.Socksaddr{}, net.ErrClosed
+	}
 	dest, err := c.PacketConn.ReadPacket(buffer)
 	if c.closed.Load() { return singM.Socksaddr{}, net.ErrClosed }
 	if err != nil {
@@ -903,6 +924,16 @@ func (c *trackedPacketConn) Close() error {
 		}
 		c.tracker.removeConnRef(c.connID)
 		c.tracker.notifyDeviceChange()
+		if c.strictRevocation {
+			// sing-quic's UDP Close mutates session state concurrently with
+			// ReadPacket. Defer that mutation until an in-flight read returns.
+			// New reads and writes are rejected immediately by closed.
+			c.readMu.Lock()
+			closeUnderlying := c.activeReads == 0 && !c.underlyingClosed
+			if closeUnderlying { c.underlyingClosed = true }
+			c.readMu.Unlock()
+			if !closeUnderlying { return nil }
+		}
 		return c.PacketConn.Close()
 	}
 	return nil
