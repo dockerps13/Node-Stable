@@ -384,6 +384,23 @@ func (t *ConnTracker) RoutedConnection(
 	return wrapped
 }
 
+// rejectedPacketConn makes a denied UDP session fail closed. sing-box can
+// cache the first datagram while matching routes, *before* invoking trackers.
+// Closing the original PacketConn alone is insufficient: a cached datagram
+// may still be returned by ReadPacket and forwarded to the upstream target.
+// Do not expose the original reader or any cached packets after denial.
+type rejectedPacketConn struct {
+	N.PacketConn
+}
+
+func (c *rejectedPacketConn) ReadPacket(_ *buf.Buffer) (singM.Socksaddr, error) {
+	return singM.Socksaddr{}, net.ErrClosed
+}
+
+func (c *rejectedPacketConn) WritePacket(_ *buf.Buffer, _ singM.Socksaddr) error {
+	return net.ErrClosed
+}
+
 // RoutedPacketConnection tracks UDP traffic and supports forced closure.
 func (t *ConnTracker) RoutedPacketConnection(
 	ctx context.Context, conn N.PacketConn,
@@ -418,7 +435,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 	if !t.admitDevice(us, uid, sourceIP, localLimit) {
 		conn.Close()
-		return conn
+		return &rejectedPacketConn{PacketConn: conn}
 	}
 	var releaseAdmission func()
 	var revokeMu sync.Mutex
@@ -438,7 +455,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 		if !ok {
 			us.removeConn(sourceIP)
 			conn.Close()
-			return conn
+			return &rejectedPacketConn{PacketConn: conn}
 		}
 	} else if admission := t.admissionFunc.Load(); admission != nil {
 		var ok bool
@@ -446,7 +463,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 		if !ok {
 			us.removeConn(sourceIP)
 			conn.Close()
-			return conn
+			return &rejectedPacketConn{PacketConn: conn}
 		}
 	}
 
