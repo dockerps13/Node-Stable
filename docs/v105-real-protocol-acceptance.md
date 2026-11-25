@@ -20,6 +20,19 @@ This validates the regression at that commit, including moving sing-box tracker 
 
 `trackedPacketConn.Close` in strict-revocation mode defers the underlying QUIC UDP close while `ReadPacket` is in progress. A permanently blocked underlying read may therefore delay cleanup indefinitely. Before release, verify idle-session revocation drains the underlying reader, releases the socket/session, and removes the global lease with bounded timing; exercise this under Go race detection without suppressing failures. Do not claim this is covered by the existing roundtrip test.
 
+## Redis Lua short-run capacity evidence
+
+[GitHub Actions PR run 45707225404](https://github.com/dockerps13/Node-Stable/actions/runs/45707225404) passed the benchmark and artifact upload at commit `59c792fbfacb0b1976399b3963a366bdd608c21a`.
+
+Test conditions: disposable Redis 7 service on GitHub Actions, 12 concurrent threads, 8 seconds per case, 4 distinct IPs, 32 or 256 active owner leases. This measures only Redis Lua `renew` operations (no Laravel HTTP or actual node service latency). The JSON artifact is `redis-lease-cardinality-benchmark`.
+
+| Active owner leases | Operations | Throughput (renew/s) | P50 (ms) | P95 (ms) | P99 (ms) |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 32 | 90,393 | 11,294.26 | 1.072 | 1.343 | 1.471 |
+| 256 | 25,032 | 3,126.83 | 3.740 | 5.011 | 5.347 |
+
+The Lua authority currently scans active owner leases per operation, making capacity sensitive to cardinality. **No production throughput guarantee or release approval is inferred.** Next steps: benchmark larger cardinalities, realistic acquire/release/renew mixes, HTTP/Redis latency, sustained load, worst-case Redis CPU/memory and a 24-hour staging soak. Set thresholds based on target deployment hardware and expected load, then repeat the measured runs.
+
 ## Scope and test topology
 
 Use an **isolated** XBoard Laravel 12 panel, disposable SQL fixtures, a dedicated Redis 7 instance, and **two separate packaged Node-Stable processes** with unique machine IDs/tokens. The panel and both nodes must be reachable by real proxy clients. Do not reuse production database, Redis, tokens, domains, listener ports, or live node IDs.
