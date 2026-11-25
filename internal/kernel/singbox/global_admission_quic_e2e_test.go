@@ -137,13 +137,19 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
                     stop := liveRevoke
                     revokeMu.Unlock()
                     if stop == nil { return "", fmt.Errorf("missing active QUIC lease revocation callback") }
+                    // A remote lease revocation also removes the authority to
+                    // acquire a replacement lease. Do not let a fresh UDP
+                    // association immediately re-admit via the synthetic
+                    // test authority after the revoked association closes.
+                    allow.Store(false)
+                    beforeRetry := attempts.Load()
                     stop()
                     // The client may observe a write error or a silent drop;
                     // either is acceptable, but delivering the packet is not.
                     _, _ = packet.WriteTo([]byte("after-revoke"), target.LocalAddr())
                     time.Sleep(350 * time.Millisecond)
                     if count := received.Load(); count != 1 {
-                        return "", fmt.Errorf("revoked UDP session still forwarded packets: destination count=%d", count)
+                        return "", fmt.Errorf("revoked UDP session still forwarded packets: destination count=%d admission attempts after revocation=%d", count, attempts.Load()-beforeRetry)
                     }
                 }
                 return string(response[:n]), nil
