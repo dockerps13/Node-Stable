@@ -1,0 +1,36 @@
+name: v1.0.5 global device admission
+
+on:
+  pull_request:
+    paths:
+      - 'internal/globaladmission/**'
+      - 'tests/global-device-redis.sh'
+      - '.github/workflows/global-device-admission.yml'
+  push:
+    branches:
+      - 'feature/global-device-admission-v105'
+    paths:
+      - 'internal/globaladmission/**'
+      - 'tests/global-device-redis.sh'
+      - '.github/workflows/global-device-admission.yml'
+
+jobs:
+  lease-tests:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Reference model and race tests
+        run: go test -race -count=3 ./internal/globaladmission
+      - name: Install Redis CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
+      - name: Redis lease atomicity integration
+        run: bash tests/global-device-redis.sh
