@@ -30,25 +30,25 @@ func TestXraySharedAdmissionUsesCanonicalUserID(t *testing.T) {
 	ld.SetAdmissionFunc(func(uid int, ip string, limit int) (func(), bool) {
 		return authority.Acquire(scope, uid, ip, limit)
 	})
-	if release, ok := ld.reserveMachineSlot("socks-user-uuid", "192.0.2.3"); ok {
+	if release, ok := ld.reserveMachineSlot("socks-user-uuid", "192.0.2.3", nil); ok {
 		if release != nil {
 			release()
 		}
 		t.Fatal("SOCKS third IP bypassed cross-protocol limit")
 	}
-	if release, ok := ld.reserveMachineSlot("user@7", "192.0.2.3"); ok {
+	if release, ok := ld.reserveMachineSlot("user@7", "192.0.2.3", nil); ok {
 		if release != nil {
 			release()
 		}
 		t.Fatal("another Xray identity bypassed cross-protocol limit")
 	}
-	release, ok := ld.reserveMachineSlot("socks-user-uuid", "::ffff:192.0.2.2")
+	release, ok := ld.reserveMachineSlot("socks-user-uuid", "::ffff:192.0.2.2", nil)
 	if !ok {
 		t.Fatal("same IP should share device slot")
 	}
 	release()
 	second()
-	release, ok = ld.reserveMachineSlot("socks-user-uuid", "192.0.2.3")
+	release, ok = ld.reserveMachineSlot("socks-user-uuid", "192.0.2.3", nil)
 	if !ok {
 		t.Fatal("slot not released when second device left")
 	}
