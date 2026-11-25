@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"sync"
 	"time"
 
@@ -53,6 +52,7 @@ func (m *Manager) Acquire(uid int, ip string, limit int, revoke func()) (release
 	if err != nil {
 		return nil, false
 	}
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(m.ctx, m.timeout)
 	resp, err := m.client.DeviceLease(ctx, "acquire", uid, id, ip)
 	cancel()
@@ -64,14 +64,11 @@ func (m *Manager) Acquire(uid int, ip string, limit int, revoke func()) (release
 	// Network transit can only shorten the local confirmed deadline.
 	done := make(chan struct{})
 	var once sync.Once
-	var wg sync.WaitGroup
 	stop := func() {
 		once.Do(func() {close(done)})
 	}
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		deadline := time.Now().Add(time.Duration(resp.LeaseTTLMS) * time.Millisecond)
+		deadline := started.Add(time.Duration(resp.LeaseTTLMS) * time.Millisecond)
 		ticker := time.NewTicker(m.tick)
 		defer ticker.Stop()
 		for {
@@ -115,6 +112,3 @@ func (m *Manager) Acquire(uid int, ip string, limit int, revoke func()) (release
 	}, true
 }
 
-// WaitClosed exists for tests of lifecycle orchestration to use a test
-// client with a deterministic expiry; no package-global lease registry is kept.
-var _ = errors.New
