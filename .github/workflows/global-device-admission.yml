@@ -54,4 +54,8 @@ jobs:
         env:
           GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
         run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run TestTwoMachineClientsHTTPRedisAuthority
+      - name: Two independent node OS processes through HTTP and Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run TestTwoIndependentNodeProcesses
 
