@@ -2,6 +2,19 @@
 
 **Status: BLOCKED.** This is an acceptance plan, not evidence of a passed test. Keep the Node-Stable and Xboard PRs in draft and keep v1.0.4 production unchanged.
 
+## Latest CI evidence (not a release approval)
+
+At Node-Stable commit `6930bd981c562e06faed4b0690116241ae312898`, the three CI checks passed:
+- [v1.0.5 global device admission](https://github.com/dockerps13/Node-Stable/actions/runs/45695969897)
+- [Real Laravel and two-node E2E](https://github.com/dockerps13/Node-Stable/actions/runs/45695969851)
+- [v1.0.4 pre-release acceptance](https://github.com/dockerps13/Node-Stable/actions/runs/45695969903)
+
+The next commit adds a twelve-iteration real Hysteria2/TUIC UDP revoke/reconnect race run. **Its result is not yet recorded here.** Green CI does not replace real packaged-service, soak, rollback, Xray MUX/XUDP, or panel-plugin compatibility evidence.
+
+### Open resource-lifecycle risk
+
+`trackedPacketConn.Close` in strict-revocation mode defers the underlying QUIC UDP close while `ReadPacket` is in progress. A permanently blocked underlying read may therefore delay cleanup indefinitely. Before release, verify idle-session revocation drains the underlying reader, releases the socket/session, and removes the global lease with bounded timing; exercise this under Go race detection without suppressing failures. Do not claim this is covered by the existing roundtrip test.
+
 ## Scope and test topology
 
 Use an **isolated** XBoard Laravel 12 panel, disposable SQL fixtures, a dedicated Redis 7 instance, and **two separate packaged Node-Stable processes** with unique machine IDs/tokens. The panel and both nodes must be reachable by real proxy clients. Do not reuse production database, Redis, tokens, domains, listener ports, or live node IDs.
