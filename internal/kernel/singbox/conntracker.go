@@ -143,6 +143,7 @@ type ConnTracker struct {
 	// deviceLimitFunc resolves a user UUID to their device limit.
 	deviceLimitFunc  atomic.Pointer[func(uuid string) (int, bool)]
 	admissionFunc    atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
+	revocableAdmissionFunc atomic.Pointer[func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)]
 	deviceChangeFunc atomic.Pointer[func()]
 
 	// Multi-node device state from panel
@@ -174,6 +175,10 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 // SetAdmissionFunc configures shared per-machine atomic admission.
 func (t *ConnTracker) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
 	t.admissionFunc.Store(&fn)
+}
+
+func (t *ConnTracker) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	t.revocableAdmissionFunc.Store(&fn)
 }
 
 // SetDeviceChangeFunc supplies a nonblocking notification to report IP changes.
@@ -310,7 +315,26 @@ func (t *ConnTracker) RoutedConnection(
 		return conn
 	}
 	var releaseAdmission func()
-	if admission := t.admissionFunc.Load(); admission != nil {
+	var revokeMu sync.Mutex
+	var revokeTarget io.Closer
+	revoked := false
+	revoke := func() {
+		revokeMu.Lock()
+		revoked = true
+		target := revokeTarget
+		revokeMu.Unlock()
+		if target != nil { _ = target.Close() }
+	}
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		admission := t.revocableAdmissionFunc.Load()
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit, revoke)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return conn
+		}
+	} else if admission := t.admissionFunc.Load(); admission != nil {
 		var ok bool
 		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
 		if !ok {
@@ -339,6 +363,14 @@ func (t *ConnTracker) RoutedConnection(
 		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
+		_ = wrapped.Close()
+		return conn
+	}
+	revokeMu.Lock()
+	revokeTarget = wrapped
+	alreadyRevoked := revoked
+	revokeMu.Unlock()
+	if alreadyRevoked {
 		_ = wrapped.Close()
 		return conn
 	}
@@ -377,7 +409,26 @@ func (t *ConnTracker) RoutedPacketConnection(
 		return conn
 	}
 	var releaseAdmission func()
-	if admission := t.admissionFunc.Load(); admission != nil {
+	var revokeMu sync.Mutex
+	var revokeTarget io.Closer
+	revoked := false
+	revoke := func() {
+		revokeMu.Lock()
+		revoked = true
+		target := revokeTarget
+		revokeMu.Unlock()
+		if target != nil { _ = target.Close() }
+	}
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		admission := t.revocableAdmissionFunc.Load()
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit, revoke)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return conn
+		}
+	} else if admission := t.admissionFunc.Load(); admission != nil {
 		var ok bool
 		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
 		if !ok {
@@ -406,6 +457,14 @@ func (t *ConnTracker) RoutedPacketConnection(
 		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
+		_ = wrapped.Close()
+		return conn
+	}
+	revokeMu.Lock()
+	revokeTarget = wrapped
+	alreadyRevoked := revoked
+	revokeMu.Unlock()
+	if alreadyRevoked {
 		_ = wrapped.Close()
 		return conn
 	}
