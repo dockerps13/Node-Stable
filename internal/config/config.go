@@ -50,6 +50,9 @@ type MachineConfig struct {
 	MachineID int    `yaml:"machine_id"`
 	Token     string `yaml:"token"`
 	TokenEnv  string `yaml:"token_env,omitempty"`
+	// Experimental: requires an enabled XBoard global lease API.
+	// Defaults false so existing machines keep local admission unchanged.
+	GlobalDeviceAdmission bool `yaml:"global_device_admission,omitempty"`
 }
 
 // NodeEntry describes a single node in multi-node mode.
