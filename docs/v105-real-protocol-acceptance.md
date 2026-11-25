@@ -9,7 +9,12 @@ At Node-Stable commit `6930bd981c562e06faed4b0690116241ae312898`, the three CI c
 - [Real Laravel and two-node E2E](https://github.com/dockerps13/Node-Stable/actions/runs/45695969851)
 - [v1.0.4 pre-release acceptance](https://github.com/dockerps13/Node-Stable/actions/runs/45695969903)
 
-The next commit adds a twelve-iteration real Hysteria2/TUIC UDP revoke/reconnect race run. **Its result is not yet recorded here.** Green CI does not replace real packaged-service, soak, rollback, Xray MUX/XUDP, or panel-plugin compatibility evidence.
+At Node-Stable commit `030bb2e3f78fe4fe0bb24a2be792695c00954000`, all three required workflows passed again:
+- [v1.0.5 global admission, including 12 repeated Hysteria2/TUIC real-QUIC UDP revoke/reconnect tests with Go race detector](https://github.com/dockerps13/Node-Stable/actions/runs/45700005097)
+- [Real Laravel and two-node E2E](https://github.com/dockerps13/Node-Stable/actions/runs/45700004874)
+- [v1.0.4 pre-release acceptance](https://github.com/dockerps13/Node-Stable/actions/runs/45700005048)
+
+This validates the regression at that commit, including moving sing-box tracker registration before listeners start. It is **not** proof of idle-read resource cleanup, multi-hour soak, real packaged-service Xray MUX/XUDP, rollback, or panel-plugin compatibility.
 
 ### Open resource-lifecycle risk
 
