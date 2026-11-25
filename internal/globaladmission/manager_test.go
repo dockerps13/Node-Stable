@@ -141,3 +141,85 @@ func TestManagerSlowRenewCannotExtendExpiredLease(t *testing.T) {
 		t.Fatal("stalled renewal outlived confirmed lease deadline")
 	}
 }
+
+ 
+// Multiple real connections behind one canonical IP must share a single
+// remote lease. Closing one connection must not free the remote slot while
+// another connection still owns it.
+func TestManagerSharedIPReleasesOnlyFinalOwner(t *testing.T) {
+	f := &leaseFake{ttl: 5000}
+	m := NewManager(context.Background(), f)
+	m.tick = time.Hour
+
+	releaseA, ok := m.Acquire(7, "192.0.2.1", 1, func() {})
+	if !ok { t.Fatal("first connection denied") }
+	releaseB, ok := m.Acquire(7, "::ffff:192.0.2.1", 1, func() {})
+	if !ok {
+		releaseA()
+		t.Fatal("same canonical IP denied")
+	}
+
+	f.mu.Lock()
+	acquires := 0
+	for _, action := range f.actions {
+		if action == "acquire" { acquires++ }
+	}
+	f.mu.Unlock()
+	if acquires != 1 { t.Fatalf("expected one remote acquisition, got %d", acquires) }
+
+	releaseA()
+	releaseA() // connection cleanup must be idempotent
+	f.mu.Lock()
+	releases := 0
+	for _, action := range f.actions {
+		if action == "release" { releases++ }
+	}
+	f.mu.Unlock()
+	if releases != 0 { t.Fatalf("premature remote release while second connection remains: %d", releases) }
+
+	releaseB()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := m.WaitReleases(ctx); err != nil { t.Fatalf("release RPC did not finish: %v", err) }
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	releases = 0
+	for _, action := range f.actions {
+		if action == "release" { releases++ }
+	}
+	if releases != 1 { t.Fatalf("expected exactly one final remote release, got %d; actions=%v", releases, f.actions) }
+}
+
+// Shutdown is not an authorization grant: cancelling the owning node context
+// must revoke an active connection even if the next renewal is far away.
+func TestManagerContextCancellationRevokesActiveLease(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &leaseFake{ttl: 5000}
+	m := NewManager(ctx, f)
+	m.tick = time.Hour
+
+	lost := make(chan struct{}, 1)
+	release, ok := m.Acquire(7, "192.0.2.20", 1, func() {
+		select { case lost <- struct{}{}: default: }
+	})
+	if !ok { t.Fatal("acquire denied") }
+	defer release()
+	cancel()
+
+	select {
+	case <-lost:
+	case <-time.After(time.Second):
+		t.Fatal("node context cancellation left connection admitted")
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if err := m.WaitReleases(waitCtx); err != nil { t.Fatalf("shutdown remote release did not finish: %v", err) }
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	releases := 0
+	for _, action := range f.actions {
+		if action == "release" { releases++ }
+	}
+	if releases != 1 { t.Fatalf("expected one release after shutdown, got %d; actions=%v", releases, f.actions) }
+}
