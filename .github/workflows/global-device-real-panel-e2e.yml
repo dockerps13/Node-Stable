@@ -77,6 +77,14 @@ jobs:
           done
           cat /tmp/v105-panel.log
           exit 1
+      - name: Verify Laravel accepts a real authenticated machine lease
+        run: |
+          response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease \
+            -H 'Content-Type: application/json' -H 'Accept: application/json' \
+            --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-probe-000001","ip":"192.0.2.100"}')"
+          printf '%s\n' "$response"
+          echo "$response" | grep -F '"allowed":true'
+          redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
       - name: Two independent Node-Stable processes to real Laravel HTTP and Redis
         env:
           GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
