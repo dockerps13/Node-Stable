@@ -50,3 +50,8 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
       - name: Redis lease atomicity integration
         run: bash tests/global-device-redis.sh
+      - name: Two authenticated node clients over HTTP and Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run '^TestTwoMachineClientsHTTPRedisAuthority
+
