@@ -1,0 +1,92 @@
+name: v1.0.5 real Laravel and two-node E2E
+
+on:
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'internal/globaladmission/**'
+      - '.github/workflows/global-device-real-panel-e2e.yml'
+  pull_request:
+    paths:
+      - 'internal/globaladmission/**'
+      - '.github/workflows/global-device-real-panel-e2e.yml'
+
+jobs:
+  real-panel-two-node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    env:
+      APP_ENV: testing
+      APP_DEBUG: 'false'
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      CACHE_STORE: array
+      CACHE_DRIVER: array
+      SESSION_DRIVER: array
+      QUEUE_CONNECTION: sync
+      REDIS_CLIENT: phpredis
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ''
+      REDIS_PREFIX: ''
+      DB_CONNECTION: sqlite
+      DB_DATABASE: ${{ github.workspace }}/v105-stage.sqlite
+      GLOBAL_DEVICE_ADMISSION_ENABLED: 'true'
+    steps:
+      - name: Checkout Node-Stable feature branch
+        uses: actions/checkout@v4
+      - name: Checkout real XBoard feature branch (public repository)
+        uses: actions/checkout@v4
+        with:
+          repository: dockerps13/Xboard
+          ref: feature/global-device-admission-v105
+          path: xboard
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install PHP with Redis and SQLite
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: redis, pdo_sqlite, mbstring, xml, curl, zip, bcmath
+          coverage: none
+      - name: Install isolated test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y redis-tools
+          composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
+      - name: Prepare real Laravel test SQLite
+        run: |
+          touch "$DB_DATABASE"
+          php xboard/tests/global-device-stage-bootstrap.php
+      - name: Start real Laravel HTTP listener
+        run: |
+          php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php >/tmp/v105-panel.log 2>&1 &
+          echo $! > /tmp/v105-panel.pid
+          for i in $(seq 1 30); do
+            status="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Accept: application/json' http://127.0.0.1:8765/api/v2/server/device-lease || true)"
+            if [ "$status" != "000" ]; then exit 0; fi
+            sleep 1
+          done
+          cat /tmp/v105-panel.log
+          exit 1
+      - name: Two independent Node-Stable processes to real Laravel HTTP and Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+          GLOBAL_ADMISSION_REAL_PANEL_URL: http://127.0.0.1:8765
+        run: |
+          go test -race -count=1 -timeout=120s -v ./internal/globaladmission -run TestTwoIndependentNodeProcesses
+      - name: Show isolated PHP errors on failure
+        if: failure()
+        run: tail -100 /tmp/v105-panel.log 2>/dev/null || true
+      - name: Stop test web server
+        if: always()
+        run: |
+          if [ -f /tmp/v105-panel.pid ]; then kill "$(cat /tmp/v105-panel.pid)" 2>/dev/null || true; fi
