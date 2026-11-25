@@ -10,8 +10,12 @@ KEY="$PREFIX:panel-a:user-7"
 OTHER="$PREFIX:panel-b:user-7"
 STRESS="$PREFIX:stress:user-7"
 
+# Use per-run temporary result files; shared /tmp names can cross-contaminate CI jobs.
+RESULTS_FILE="$(mktemp)"
+STRESS_FILE="$(mktemp)"
 cleanup() {
   redis-cli -h 127.0.0.1 -p 6379 DEL "$KEY" "$OTHER" "$STRESS" >/dev/null 2>&1 || true
+  rm -f "$RESULTS_FILE" "$STRESS_FILE"
 }
 trap cleanup EXIT
 redis-cli -h 127.0.0.1 -p 6379 PING | grep -qx PONG
@@ -59,9 +63,9 @@ export PREFIX SCRIPT
 seq 1 60 | xargs -P 16 -I '{}' bash -c '
   n="$1"
   redis-cli --raw -h 127.0.0.1 -p 6379 --eval "$SCRIPT" "$PREFIX:panel-a:user-7" , acquire "parallel:$n" "198.51.100.$n" 2 30000 | head -n 1
-' _ '{}' > "/tmp/global-device-redis-results-$$"
-accepted="$(grep -cx 1 "/tmp/global-device-redis-results-$$" || true)"
-rm -f "/tmp/global-device-redis-results-$$"
+' _ '{}' > "$RESULTS_FILE"
+accepted="$(grep -cx 1 "$RESULTS_FILE" || true)"
+
 if [[ "$accepted" != 2 ]]; then
   echo "FAIL: expected 2 concurrent grants, got $accepted" >&2
   exit 1
@@ -85,10 +89,10 @@ seq 1 400 | xargs -P 32 -I '{}' bash -c '
   oct3=$(( (n-1) / 250 ))
   oct4=$(( (n-1) % 250 + 1 ))
   redis-cli --raw -h 127.0.0.1 -p 6379 --eval "$SCRIPT" "$STRESS" , acquire "stress:$n" "198.18.$oct3.$oct4" 2 30000 | head -n 1
-' _ '{}' > "/tmp/global-device-redis-stress-$"
-stress_ok="$(grep -cx 1 "/tmp/global-device-redis-stress-$" || true)"
-stress_total="$(wc -l < "/tmp/global-device-redis-stress-$")"
-rm -f "/tmp/global-device-redis-stress-$"
+' _ '{}' > "$STRESS_FILE"
+stress_ok="$(grep -cx 1 "$STRESS_FILE" || true)"
+stress_total="$(wc -l < "$STRESS_FILE")"
+
 stress_elapsed="$(( $(date +%s%3N) - stress_start ))"
 if [[ "$stress_ok" != 2 || "$stress_total" != 400 ]]; then
   echo "FAIL: stress admitted $stress_ok of $stress_total; expected exactly 2 of 400" >&2
