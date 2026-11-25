@@ -176,18 +176,30 @@ func (m *Manager) renew(key leaseKey,state *leaseState) {
 	ticker:=time.NewTicker(m.tick)
 	defer ticker.Stop()
 	for {
+		m.mu.Lock()
+		if m.slots[key]!=state {m.mu.Unlock();return}
+		deadline:=state.deadline
+		m.mu.Unlock()
+		remaining:=time.Until(deadline)
+		if remaining<=0 {m.lose(key,state);return}
+
+		// An independent expiry timer is mandatory: the renewal cadence
+		// may exceed the granted TTL (especially during tests or config
+		// changes). Never keep a connection authorized past its deadline.
+		expiry:=time.NewTimer(remaining)
 		select {
-		case <-state.done:return
+		case <-state.done:
+			expiry.Stop()
+			return
 		case <-m.ctx.Done():
+			expiry.Stop()
+			m.lose(key,state)
+			return
+		case <-expiry.C:
 			m.lose(key,state)
 			return
 		case <-ticker.C:
-			m.mu.Lock()
-			if m.slots[key]!=state {m.mu.Unlock();return}
-			deadline:=state.deadline
-			m.mu.Unlock()
-			if !time.Now().Before(deadline) {m.lose(key,state);return}
-
+			expiry.Stop()
 			started:=time.Now()
 			ctx,cancel:=context.WithTimeout(m.ctx,m.timeout)
 			reply,err:=m.client.DeviceLease(ctx,"renew",key.uid,state.id,"")
