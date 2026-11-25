@@ -12,6 +12,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/controlplane"
 	"github.com/cedar2025/xboard-node/internal/devicegate"
+	"github.com/cedar2025/xboard-node/internal/globaladmission"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -220,9 +221,18 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	svc := service.NewWithControlPlane(nodeCfg, cp)
 	// All protocols and both kernels on this authenticated machine use one
 	// atomic per-user public-IP admission table rather than per-node quotas.
-	svc.SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool) {
-		return o.admission.Acquire(fmt.Sprintf("%s/%d", o.cfg.Panel.URL, o.cfg.Machine.MachineID), userID, sourceIP, limit)
-	})
+	if o.cfg.Machine.GlobalDeviceAdmission {
+		// Machine mode only, explicitly opted in. Each node uses its own
+		// authenticated client. Revocation closes its live Xray/sing-box link.
+		manager := globaladmission.NewManager(nodeCtx, perNodeClient)
+		svc.SetRevocableAdmissionFunc(func(userID int, sourceIP string, limit int, revoke func()) (func(), bool) {
+			return manager.Acquire(userID, sourceIP, limit, revoke)
+		})
+	} else {
+		svc.SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool) {
+			return o.admission.Acquire(fmt.Sprintf("%s/%d", o.cfg.Panel.URL, o.cfg.Machine.MachineID), userID, sourceIP, limit)
+		})
+	}
 
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
