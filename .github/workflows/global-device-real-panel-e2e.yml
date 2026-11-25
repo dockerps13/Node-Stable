@@ -36,7 +36,7 @@ jobs:
       REDIS_PASSWORD: ''
       REDIS_PREFIX: ''
       DB_CONNECTION: sqlite
-      DB_DATABASE: ${{ github.workspace }}/v105-stage.sqlite
+      DB_DATABASE: ../v105-stage.sqlite
       GLOBAL_DEVICE_ADMISSION_ENABLED: 'true'
     steps:
       - name: Checkout Node-Stable feature branch
@@ -65,7 +65,7 @@ jobs:
           composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
       - name: Prepare real Laravel test SQLite
         run: |
-          touch "$DB_DATABASE"
+          touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
           php xboard/tests/global-device-stage-bootstrap.php
       - name: Start real Laravel HTTP listener
         run: |
