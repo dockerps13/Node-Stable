@@ -917,9 +917,20 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 	}
 }
 
+// The guard adapters deliberately do not implement UnwrapPacketReader/Writer.
+// Returning trackedPacketConn directly would recursively unwrap itself.
+type leasePacketReader struct { conn *trackedPacketConn }
+func (r *leasePacketReader) ReadPacket(b *buf.Buffer) (singM.Socksaddr, error) {
+	return r.conn.ReadPacket(b)
+}
+type leasePacketWriter struct { conn *trackedPacketConn }
+func (w *leasePacketWriter) WritePacket(b *buf.Buffer, dest singM.Socksaddr) error {
+	return w.conn.WritePacket(b, dest)
+}
+
 func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc) {
 	// Returning the raw packet reader lets sing-box bypass revocation checks.
-	if c.strictRevocation { return c, nil }
+	if c.strictRevocation { return &leasePacketReader{conn: c}, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -927,7 +938,7 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
-	if c.strictRevocation { return c, nil }
+	if c.strictRevocation { return &leasePacketWriter{conn: c}, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
