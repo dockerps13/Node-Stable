@@ -5,6 +5,7 @@ import (
     "encoding/json"
     "fmt"
     "net"
+    "sync"
     "sync/atomic"
     "testing"
     "time"
@@ -68,6 +69,8 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
             var allow atomic.Bool
             var attempts atomic.Int32
             var released atomic.Int32
+            var revokeMu sync.Mutex
+            var liveRevoke func()
             server.SetRevocableAdmissionFunc(func(uid int, ip string, limit int, revoke func()) (func(), bool) {
                 attempts.Add(1)
                 if uid != 7 || ip != "127.0.0.1" || limit != 1 || revoke == nil {
@@ -75,6 +78,9 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
                     return nil, false
                 }
                 if !allow.Load() { return nil, false }
+                revokeMu.Lock()
+                liveRevoke = revoke
+                revokeMu.Unlock()
                 return func() { released.Add(1) }, true
             })
             if err := server.Start(
@@ -83,7 +89,7 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
             ); err != nil { t.Fatal(err) }
             defer server.Stop()
 
-            send := func(payload string) (string, error) {
+            send := func(payload string, revokeActive bool) (string, error) {
                 ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
                 defer cancel()
                 ctx = include.Context(ctx)
@@ -123,12 +129,29 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
                 response := make([]byte, 512)
                 n, _, err := packet.ReadFrom(response)
                 if err != nil { return "", err }
+                if revokeActive {
+                    // Revoke the still-open UDP session after a successful
+                    // real QUIC round-trip. Further packets from that same
+                    // client session must not reach the destination.
+                    revokeMu.Lock()
+                    stop := liveRevoke
+                    revokeMu.Unlock()
+                    if stop == nil { return "", fmt.Errorf("missing active QUIC lease revocation callback") }
+                    stop()
+                    // The client may observe a write error or a silent drop;
+                    // either is acceptable, but delivering the packet is not.
+                    _, _ = packet.WriteTo([]byte("after-revoke"), target.LocalAddr())
+                    time.Sleep(350 * time.Millisecond)
+                    if count := received.Load(); count != 1 {
+                        return "", fmt.Errorf("revoked UDP session still forwarded packets: destination count=%d", count)
+                    }
+                }
                 return string(response[:n]), nil
             }
 
             // Refused remote lease must prevent the proxied payload reaching
             // the UDP echo target. QUIC authentication itself may still run.
-            if got, err := send("denied-datagram"); err == nil {
+            if got, err := send("denied-datagram", false); err == nil {
                 t.Fatalf("denied QUIC UDP payload unexpectedly returned %q", got)
             }
             if count := received.Load(); count != 0 {
@@ -139,7 +162,7 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
             }
 
             allow.Store(true)
-            got, err := send("authorized-datagram")
+            got, err := send("authorized-datagram", true)
             if err != nil || got != "authorized-response" {
                 t.Fatalf("authorized QUIC UDP roundtrip: got=%q err=%v", got, err)
             }
