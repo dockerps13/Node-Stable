@@ -75,10 +75,20 @@ func TestDeviceLeaseRequiresMachineAuth(t *testing.T) {
 }
 
 func TestDeviceLeaseRespectsDeadline(t *testing.T) {
+	// The handler simulates a stalled panel. A separate stop channel makes
+	// teardown deterministic even when an HTTP request's server-side context
+	// is not canceled promptly after the client disconnects.
+	stop := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		}
 	}))
-	defer server.Close()
+	defer func() {
+		close(stop)
+		server.Close()
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
 	defer cancel()
 	start := time.Now()
