@@ -484,6 +484,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 		releaseAdmission: releaseAdmission,
 		limiter:          lim,
 		ctx:              ctx,
+		strictRevocation: limit > 0 && t.revocableAdmissionFunc.Load() != nil,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
 		_ = wrapped.Close()
@@ -827,6 +828,8 @@ func (c *trackedConn) WriterReplaceable() bool { return c.limiter == nil }
 
 type trackedPacketConn struct {
 	N.PacketConn
+	// Keep the wrapper in the data path when a remote lease can revoke it.
+	strictRevocation bool
 	tracker          *ConnTracker
 	us               *userStats
 	userID           int
@@ -863,7 +866,9 @@ func waitPacketBudget(ctx context.Context, limiter *rate.Limiter, n int) error {
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
+	if c.closed.Load() { return singM.Socksaddr{}, net.ErrClosed }
 	dest, err := c.PacketConn.ReadPacket(buffer)
+	if c.closed.Load() { return singM.Socksaddr{}, net.ErrClosed }
 	if err != nil {
 		return dest, err
 	}
@@ -875,6 +880,7 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 }
 
 func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr) error {
+	if c.closed.Load() { buffer.Release(); return net.ErrClosed }
 	n := buffer.Len()
 	if err := waitPacketBudget(c.ctx, c.limiter, n); err != nil {
 		buffer.Release()
@@ -912,6 +918,8 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 }
 
 func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc) {
+	// Returning the raw packet reader lets sing-box bypass revocation checks.
+	if c.strictRevocation { return c, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -919,6 +927,7 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
+	if c.strictRevocation { return c, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -926,5 +935,5 @@ func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }
-func (c *trackedPacketConn) ReaderReplaceable() bool { return c.limiter == nil }
-func (c *trackedPacketConn) WriterReplaceable() bool { return c.limiter == nil }
+func (c *trackedPacketConn) ReaderReplaceable() bool { return c.limiter == nil && !c.strictRevocation }
+func (c *trackedPacketConn) WriterReplaceable() bool { return c.limiter == nil && !c.strictRevocation }
