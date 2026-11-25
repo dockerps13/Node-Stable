@@ -310,7 +310,13 @@ func (t *ConnTracker) RoutedConnection(
 			limit = value
 		}
 	}
-	if !t.admitDevice(us, uid, sourceIP, limit) {
+	// Global revocable leases are authoritative for admission. Keep local
+	// device/accounting stats, but never reject against stale snapshots.
+	localLimit := limit
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		localLimit = 0
+	}
+	if !t.admitDevice(us, uid, sourceIP, localLimit) {
 		conn.Close()
 		return conn
 	}
@@ -404,7 +410,13 @@ func (t *ConnTracker) RoutedPacketConnection(
 			limit = value
 		}
 	}
-	if !t.admitDevice(us, uid, sourceIP, limit) {
+	// Global revocable leases are authoritative for admission. Keep local
+	// device/accounting stats, but never reject against stale snapshots.
+	localLimit := limit
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		localLimit = 0
+	}
+	if !t.admitDevice(us, uid, sourceIP, localLimit) {
 		conn.Close()
 		return conn
 	}
