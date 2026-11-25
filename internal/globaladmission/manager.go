@@ -184,8 +184,11 @@ func (m *Manager) lose(key leaseKey,state *leaseState) {
 	for _,revoke:=range state.callbacks {callbacks=append(callbacks,revoke)}
 	state.callbacks=nil
 	m.mu.Unlock()
-	for _,revoke:=range callbacks {revoke()}
+	// Register the asynchronous release before invoking user callbacks.
+	// Callbacks may wake a shutdown goroutine that calls WaitReleases;
+	// if registration happens afterwards, Wait races with WaitGroup.Add.
 	m.releaseRemote(key,state.id)
+	for _,revoke:=range callbacks {revoke()}
 }
 
 func (m *Manager) renew(key leaseKey,state *leaseState) {
