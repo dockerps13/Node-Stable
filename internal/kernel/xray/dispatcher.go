@@ -430,6 +430,19 @@ func (d *LimitDispatcher) checkDeviceLimit(email, sourceIP string, isTCP bool) b
 		}
 		return false
 	}
+	// Strict global mode delegates quota decisions exclusively to Redis.
+	// Retain local counts for reporting and lifecycle cleanup only.
+	if d.revocableAdmissionFunc != nil {
+		if isTCP {
+			ips := d.limitedIPs[email]
+			if ips == nil {
+				ips = make(map[string]int)
+				d.limitedIPs[email] = ips
+			}
+			ips[sourceIP]++
+		}
+		return false
+	}
 	ips := d.limitedIPs[email]
 	// Include existing connections from all aliases of this panel user.
 	uid := d.emailToUID[email]
