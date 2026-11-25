@@ -158,8 +158,8 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		ld.UpdateLimits(emailToUID, deviceLimits, nil)
 		if x.admissionFunc != nil {
 			ld.SetAdmissionFunc(x.admissionFunc)
-			if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
 		}
+		if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
 		if x.deviceChangeFunc != nil {
 			ld.SetDeviceChangeFunc(x.deviceChangeFunc)
 		}
@@ -196,9 +196,9 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	closeOld(old, oldLD)
 
 	x.updateDispatcherLimits(users)
-	if x.admissionFunc != nil && ld != nil {
-		ld.SetAdmissionFunc(x.admissionFunc)
-			if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
+	if ld != nil {
+		if x.admissionFunc != nil { ld.SetAdmissionFunc(x.admissionFunc) }
+		if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
 	}
 	x.updateBandwidthLimits(users)
 
