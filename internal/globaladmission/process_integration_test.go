@@ -52,6 +52,8 @@ func TestTwoIndependentNodeProcesses(t *testing.T) {
 	script,err:=filepath.Abs("redis_lease.lua")
 	if err!=nil {t.Fatal(err)}
 	key:=fmt.Sprintf("ga-process:%d:user:7",time.Now().UnixNano())
+	realPanelURL:=strings.TrimRight(os.Getenv("GLOBAL_ADMISSION_REAL_PANEL_URL"),"/")
+	if realPanelURL!="" {key="global_device_admission:v1:user:7"}
 	defer exec.Command("redis-cli","-h","127.0.0.1","-p","6379","DEL",key).Run()
 	eval:=func(action,owner,ip string)([]string,error){
 		ctx,cancel:=context.WithTimeout(context.Background(),3*time.Second)
@@ -63,7 +65,10 @@ func TestTwoIndependentNodeProcesses(t *testing.T) {
 		if len(values)!=3 {return nil,fmt.Errorf("bad reply: %s",out)}
 		return values,nil
 	}
-	server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+	var server *httptest.Server
+	panelURL:=realPanelURL
+	if realPanelURL=="" {
+	server=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		var in struct{
 			Token string `json:"token"`
 			Machine int `json:"machine_id"`
@@ -89,7 +94,9 @@ func TestTwoIndependentNodeProcesses(t *testing.T) {
 		w.Header().Set("Content-Type","application/json")
 		_ = json.NewEncoder(w).Encode(panel.DeviceLeaseReply{Allowed:allowed==1,DistinctIPs:count,LeaseTTLMS:ttl})
 	}))
-	defer server.Close()
+		panelURL=server.URL
+		defer server.Close()
+	}
 
 	type worker struct{
 		cmd *exec.Cmd
@@ -100,7 +107,7 @@ func TestTwoIndependentNodeProcesses(t *testing.T) {
 		t.Helper()
 		cmd:=exec.Command(os.Args[0],"-test.run=^TestGlobalAdmissionProcessWorker$","-test.v")
 		cmd.Env=append(os.Environ(),
-			"GLOBAL_ADMISSION_WORKER=1","TEST_URL="+server.URL,
+			"GLOBAL_ADMISSION_WORKER=1","TEST_URL="+panelURL,
 			"TEST_MACHINE="+strconv.Itoa(machine),"TEST_NODE="+strconv.Itoa(node),
 			"TEST_TOKEN="+token,"TEST_IP="+ip)
 		stdin,err:=cmd.StdinPipe()
