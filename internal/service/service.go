@@ -156,6 +156,16 @@ func (s *Service) SetAdmissionFunc(fn func(userID int, sourceIP string, limit in
 	}
 }
 
+// SetRevocableAdmissionFunc attaches a global lease authority that can
+// revoke a specific live connection. Legacy admission remains unchanged.
+func (s *Service) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	if k, ok := s.kernel.(interface {
+		SetRevocableAdmissionFunc(func(userID int, sourceIP string, limit int, revoke func()) (func(), bool))
+	}); ok {
+		k.SetRevocableAdmissionFunc(fn)
+	}
+}
+
 // NewWithControlPlane creates a Service with an externally-provided
 // ControlPlane. Used by the machine orchestrator to inject a
 // MachinePanelControlPlane with WS mux routing.
