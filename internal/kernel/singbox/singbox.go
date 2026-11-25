@@ -214,8 +214,8 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	}
 	if s.admissionFunc != nil {
 		s.connTracker.SetAdmissionFunc(s.admissionFunc)
-		if s.revocableAdmissionFunc != nil { s.connTracker.SetRevocableAdmissionFunc(s.revocableAdmissionFunc) }
-	}
+ 	}
+	if s.revocableAdmissionFunc != nil { s.connTracker.SetRevocableAdmissionFunc(s.revocableAdmissionFunc) }
 	if s.deviceChangeFunc != nil {
 		s.connTracker.SetDeviceChangeFunc(s.deviceChangeFunc)
 	}
