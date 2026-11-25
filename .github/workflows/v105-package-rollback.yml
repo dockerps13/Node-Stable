@@ -1,0 +1,71 @@
+name: v1.0.5 offline package rollback acceptance
+
+on:
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'tests/staged-binary-rollback.sh'
+      - '.github/workflows/v105-package-rollback.yml'
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'tests/staged-binary-rollback.sh'
+      - '.github/workflows/v105-package-rollback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate branch
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - name: Checkout unchanged main baseline
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: baseline
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Build baseline Linux amd64 binaries
+        working-directory: baseline
+        run: make build-linux
+      - name: Build candidate Linux amd64 binaries
+        working-directory: candidate
+        run: make build-linux
+      - name: Simulate offline upgrade and rollback in temporary directory
+        run: |
+          chmod +x candidate/tests/staged-binary-rollback.sh
+          bash candidate/tests/staged-binary-rollback.sh "$GITHUB_WORKSPACE/baseline" "$GITHUB_WORKSPACE/candidate" "$RUNNER_TEMP/acceptance-stage-${GITHUB_RUN_ID}"
+      - name: Record offline acceptance scope and binary checksums
+        if: success()
+        run: |
+          {
+            echo "candidate_commit=${GITHUB_SHA}"
+            echo "baseline_ref=main"
+            echo "scope=offline executable startup and SHA256 rollback only"
+            echo "not_tested=systemd, actual network services, Xray MUX/XUDP, panel, database, Redis, migrations"
+            (cd candidate && sha256sum xboard-node-linux-amd64 xbctl-linux-amd64)
+            (cd baseline && sha256sum xboard-node-linux-amd64 xbctl-linux-amd64)
+          } > offline-rollback-evidence.txt
+      - name: Upload offline rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-offline-rollback-evidence
+          path: offline-rollback-evidence.txt
+          if-no-files-found: warn
