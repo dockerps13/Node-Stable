@@ -932,7 +932,13 @@ func (c *trackedPacketConn) Close() error {
 			closeUnderlying := c.activeReads == 0 && !c.underlyingClosed
 			if closeUnderlying { c.underlyingClosed = true }
 			c.readMu.Unlock()
-			if !closeUnderlying { return nil }
+			if !closeUnderlying {
+				// An idle QUIC packet reader can otherwise remain blocked
+				// indefinitely and prevent the deferred underlying Close.
+				// A read deadline wakes the reader without mutating sing-quic's
+				// session map concurrently with ReadPacket.
+				return c.PacketConn.SetReadDeadline(time.Now())
+			}
 		}
 		return c.PacketConn.Close()
 	}
