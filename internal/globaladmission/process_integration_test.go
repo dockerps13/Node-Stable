@@ -40,6 +40,9 @@ func TestGlobalAdmissionProcessWorker(t *testing.T) {
 	fmt.Println("GRANTED")
 	_,_=bufio.NewReader(os.Stdin).ReadString('\n')
 	release()
+	drainCtx,drainCancel:=context.WithTimeout(context.Background(),3*time.Second)
+	defer drainCancel()
+	if err:=manager.WaitReleases(drainCtx);err!=nil {t.Fatal(err)}
 }
 
 // This test runs a shared Redis authority + real HTTP requests from two
