@@ -67,6 +67,15 @@ if [[ "$accepted" != 2 ]]; then
   exit 1
 fi
 
+# Live limit change 3 -> 1: evict excess distinct IPs deterministically.
+assert_first 1 lease "$STRESS" acquire "shrink:a" "192.0.2.11" 3 30000
+assert_first 1 lease "$STRESS" acquire "shrink:b" "192.0.2.12" 3 30000
+assert_first 1 lease "$STRESS" acquire "shrink:c" "192.0.2.13" 3 30000
+assert_first 1 lease "$STRESS" renew "shrink:a" "" 1 30000
+assert_first 0 lease "$STRESS" renew "shrink:c" "" 1 30000
+assert_first 0 lease "$STRESS" acquire "shrink:new" "192.0.2.14" 1 30000
+redis-cli -h 127.0.0.1 -p 6379 DEL "$STRESS" >/dev/null
+
 # Stress: 400 parallel attempts for distinct IPs, single Redis authority.
 # Record execution time rather than imposing a runner-dependent SLA.
 export STRESS
