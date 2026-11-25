@@ -23,6 +23,8 @@ source = pathlib.Path(mod["Dir"])
 dest = pathlib.Path(os.environ["PROBE_DIR"])
 shutil.copytree(source, dest)
 target = dest / "tuic" / "service_packet.go"
+# Module cache sources are copied read-only by default.
+target.chmod(target.stat().st_mode | 0o200)
 old = target.read_text()
 anchor = """func (s *serverSession[U]) handleUDPMessage(message *udpMessage, udpStream bool) {
 	s.udpAccess.RLock()"""
