@@ -12,7 +12,7 @@ func TestManagerCoalescesConnectionsAndLastRelease(t *testing.T) {
 	f:=&leaseFake{ttl:30000}
 	m:=NewManager(context.Background(),f)
 	m.tick=time.Hour
-	const n=100
+	const n=4000
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	releases:=make([]func(),0,n)
