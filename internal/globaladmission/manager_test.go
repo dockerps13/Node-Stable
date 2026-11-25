@@ -83,3 +83,26 @@ func TestManagerRequiresRevoker(t *testing.T) {
 	m := NewManager(context.Background(),f)
 	if _,ok:=m.Acquire(7,"192.0.2.1",1,nil);ok {t.Fatal("missing revoke callback admitted")}
 }
+
+func TestManagerExpiresWithoutRenewTick(t *testing.T) {
+	f := &leaseFake{ttl: 90}
+	m := NewManager(context.Background(), f)
+	m.tick = time.Hour // longer than Redis lease TTL
+	lost := make(chan struct{}, 1)
+	release, ok := m.Acquire(7, "192.0.2.1", 1, func() {
+		select {
+		case lost <- struct{}{}:
+		default:
+		}
+	})
+	if !ok {
+		t.Fatal("initial lease denied")
+	}
+	defer release()
+	select {
+	case <-lost:
+		// Successful: expiry is independent of renewal scheduling.
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("lease persisted beyond confirmed TTL without a renewal tick")
+	}
+}
