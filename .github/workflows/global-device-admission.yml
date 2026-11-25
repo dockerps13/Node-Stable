@@ -4,6 +4,12 @@ on:
   pull_request:
     paths:
       - 'internal/globaladmission/**'
+      - 'internal/machine/**'
+      - 'internal/kernel/xray/**'
+      - 'internal/kernel/singbox/**'
+      - 'internal/service/**'
+      - 'internal/config/**'
+      - 'internal/panel/device_lease*'
       - 'tests/global-device-redis.sh'
       - '.github/workflows/global-device-admission.yml'
   push:
@@ -11,6 +17,12 @@ on:
       - 'feature/global-device-admission-v105'
     paths:
       - 'internal/globaladmission/**'
+      - 'internal/machine/**'
+      - 'internal/kernel/xray/**'
+      - 'internal/kernel/singbox/**'
+      - 'internal/service/**'
+      - 'internal/config/**'
+      - 'internal/panel/device_lease*'
       - 'tests/global-device-redis.sh'
       - '.github/workflows/global-device-admission.yml'
 
@@ -30,6 +42,8 @@ jobs:
           cache: true
       - name: Reference model and race tests
         run: go test -race -count=3 ./internal/globaladmission
+      - name: Xray and sing-box revocation race regression
+        run: go test -race -count=2 ./internal/kernel/xray ./internal/kernel/singbox
       - name: Install Redis CLI
         run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
       - name: Redis lease atomicity integration
