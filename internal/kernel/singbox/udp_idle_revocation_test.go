@@ -10,7 +10,7 @@ import (
     "time"
 
     "github.com/sagernet/sing/common/buf"
-    M "github.com/sagernet/sing/common/metadata"
+    singM "github.com/sagernet/sing/common/metadata"
     N "github.com/sagernet/sing/common/network"
 )
 
@@ -28,12 +28,12 @@ type deadlineBlockedPacketConn struct {
     deadlines atomic.Int32
 }
 
-func (p *deadlineBlockedPacketConn) ReadPacket(_ *buf.Buffer) (M.Socksaddr, error) {
+func (p *deadlineBlockedPacketConn) ReadPacket(_ *buf.Buffer) (singM.Socksaddr, error) {
     p.reading.Store(true)
     p.startOnce.Do(func() { close(p.started) })
     <-p.wake
     p.reading.Store(false)
-    return M.Socksaddr{}, net.ErrClosed
+    return singM.Socksaddr{}, net.ErrClosed
 }
 
 func (p *deadlineBlockedPacketConn) SetReadDeadline(_ time.Time) error {
