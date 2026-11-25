@@ -201,17 +201,22 @@ func (m *Manager) renew(key leaseKey,state *leaseState) {
 		case <-ticker.C:
 			expiry.Stop()
 			started:=time.Now()
-			ctx,cancel:=context.WithTimeout(m.ctx,m.timeout)
+			// Never allow an in-flight renewal to outlive the last
+			// independently confirmed lease deadline.
+			requestDeadline:=started.Add(m.timeout)
+			if deadline.Before(requestDeadline) {requestDeadline=deadline}
+			ctx,cancel:=context.WithDeadline(m.ctx,requestDeadline)
 			reply,err:=m.client.DeviceLease(ctx,"renew",key.uid,state.id,"")
 			cancel()
 			if err==nil && !reply.Allowed {m.lose(key,state);return}
 			m.mu.Lock()
 			if m.slots[key]!=state {m.mu.Unlock();return}
-			if err==nil && reply.Allowed && reply.LeaseTTLMS>0 {
+			// No renewal can revive a lease that has already expired locally.
+			expired:=!time.Now().Before(state.deadline)
+			if !expired && err==nil && reply.Allowed && reply.LeaseTTLMS>0 {
 				updated:=started.Add(time.Duration(reply.LeaseTTLMS)*time.Millisecond)
 				if updated.After(state.deadline) {state.deadline=updated}
 			}
-			expired:=!time.Now().Before(state.deadline)
 			m.mu.Unlock()
 			if expired {m.lose(key,state);return}
 		}
