@@ -8,9 +8,10 @@ SCRIPT="$ROOT/internal/globaladmission/redis_lease.lua"
 PREFIX="ga-ci-${GITHUB_RUN_ID:-local}-$$"
 KEY="$PREFIX:panel-a:user-7"
 OTHER="$PREFIX:panel-b:user-7"
+STRESS="$PREFIX:stress:user-7"
 
 cleanup() {
-  redis-cli -h 127.0.0.1 -p 6379 DEL "$KEY" "$OTHER" >/dev/null 2>&1 || true
+  redis-cli -h 127.0.0.1 -p 6379 DEL "$KEY" "$OTHER" "$STRESS" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 redis-cli -h 127.0.0.1 -p 6379 PING | grep -qx PONG
@@ -66,4 +67,23 @@ if [[ "$accepted" != 2 ]]; then
   exit 1
 fi
 
+# Stress: 400 parallel attempts for distinct IPs, single Redis authority.
+# Record execution time rather than imposing a runner-dependent SLA.
+export STRESS
+stress_start="$(date +%s%3N)"
+seq 1 400 | xargs -P 32 -I '{}' bash -c '
+  n="$1"
+  oct3=$(( (n-1) / 250 ))
+  oct4=$(( (n-1) % 250 + 1 ))
+  redis-cli --raw -h 127.0.0.1 -p 6379 --eval "$SCRIPT" "$STRESS" , acquire "stress:$n" "198.18.$oct3.$oct4" 2 30000 | head -n 1
+' _ '{}' > "/tmp/global-device-redis-stress-$"
+stress_ok="$(grep -cx 1 "/tmp/global-device-redis-stress-$" || true)"
+stress_total="$(wc -l < "/tmp/global-device-redis-stress-$")"
+rm -f "/tmp/global-device-redis-stress-$"
+stress_elapsed="$(( $(date +%s%3N) - stress_start ))"
+if [[ "$stress_ok" != 2 || "$stress_total" != 400 ]]; then
+  echo "FAIL: stress admitted $stress_ok of $stress_total; expected exactly 2 of 400" >&2
+  exit 1
+fi
+echo "PASS: Redis stress 400 competing leases, exactly 2 granted, elapsed ${stress_elapsed}ms"
 echo "PASS: Redis Lua device lease integration"
