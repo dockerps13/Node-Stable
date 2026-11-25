@@ -106,3 +106,38 @@ func TestManagerExpiresWithoutRenewTick(t *testing.T) {
 		t.Fatal("lease persisted beyond confirmed TTL without a renewal tick")
 	}
 }
+
+type blockedRenewClient struct{}
+
+func (blockedRenewClient) DeviceLease(ctx context.Context, action string, _ int, _, _ string) (panel.DeviceLeaseReply, error) {
+	if action == "acquire" {
+		return panel.DeviceLeaseReply{Allowed: true, LeaseTTLMS: 110}, nil
+	}
+	if action == "renew" {
+		<-ctx.Done()
+		return panel.DeviceLeaseReply{}, ctx.Err()
+	}
+	return panel.DeviceLeaseReply{Allowed: true}, nil
+}
+
+func TestManagerSlowRenewCannotExtendExpiredLease(t *testing.T) {
+	m := NewManager(context.Background(), blockedRenewClient{})
+	m.tick = 15 * time.Millisecond
+	m.timeout = 2 * time.Second
+	revoked := make(chan struct{}, 1)
+	release, ok := m.Acquire(7, "192.0.2.1", 1, func() {
+		select {
+		case revoked <- struct{}{}:
+		default:
+		}
+	})
+	if !ok {
+		t.Fatal("initial short lease denied")
+	}
+	defer release()
+	select {
+	case <-revoked:
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("stalled renewal outlived confirmed lease deadline")
+	}
+}
