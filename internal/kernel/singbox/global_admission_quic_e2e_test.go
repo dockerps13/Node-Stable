@@ -132,7 +132,10 @@ func TestRealQUICUDPStrictGlobalAdmission(t *testing.T) {
                 t.Fatalf("denied QUIC UDP payload unexpectedly returned %q", got)
             }
             if count := received.Load(); count != 0 {
-                t.Fatalf("denied UDP datagram reached destination %d times", count)
+                t.Fatalf("denied UDP datagram reached destination %d times (strict admission callback calls=%d; 0 indicates this protocol path bypassed the connection tracker)", count, attempts.Load())
+            }
+            if n := attempts.Load(); n == 0 {
+                t.Fatal("QUIC UDP session never reached strict global admission callback")
             }
 
             allow.Store(true)
