@@ -11,6 +11,7 @@ on:
       - 'internal/config/**'
       - 'internal/panel/device_lease*'
       - 'tests/global-device-redis.sh'
+      - 'tests/redis-lease-benchmark.py'
       - 'docs/v105-real-protocol-acceptance.md'
       - '.github/workflows/global-device-admission.yml'
   push:
@@ -25,6 +26,7 @@ on:
       - 'internal/config/**'
       - 'internal/panel/device_lease*'
       - 'tests/global-device-redis.sh'
+      - 'tests/redis-lease-benchmark.py'
       - 'docs/v105-real-protocol-acceptance.md'
       - '.github/workflows/global-device-admission.yml'
 
@@ -63,3 +65,13 @@ jobs:
         env:
           GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
         run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run TestTwoIndependentNodeProcesses
+      - name: Redis lease cardinality latency benchmark (isolated, short-run)
+        run: |
+          python3 tests/redis-lease-benchmark.py --duration 8 --workers 12 --cardinalities 32,256 --output redis-lease-benchmark.json
+      - name: Upload Redis benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-lease-cardinality-benchmark
+          path: redis-lease-benchmark.json
+          if-no-files-found: warn
