@@ -76,8 +76,10 @@ func (m *Manager) Acquire(uid int, rawIP string, limit int, revoke func()) (func
 			}
 			m.mu.Lock()
 			if m.slots[key]!=state {
+				// Fail all waiters together on a denied/unavailable authority.
+				// Never serially stampede the panel with repeated acquisitions.
 				m.mu.Unlock()
-				continue
+				return nil,false
 			}
 			if state.id=="" || !time.Now().Before(state.deadline) {
 				m.mu.Unlock()
