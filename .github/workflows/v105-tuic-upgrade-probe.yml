@@ -1,13 +1,15 @@
-name: v1.0.5 TUIC upstream fix compatibility probe
+name: v1.0.5 TUIC session-ID backport compatibility probe
 
 on:
   pull_request:
     paths:
+      - 'tests/probe-tuic-backport.sh'
       - '.github/workflows/v105-tuic-upgrade-probe.yml'
   push:
     branches:
       - feature/global-device-admission-v105
     paths:
+      - 'tests/probe-tuic-backport.sh'
       - '.github/workflows/v105-tuic-upgrade-probe.yml'
   workflow_dispatch:
 
@@ -24,11 +26,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Trial upstream sing-quic v0.7.0 with full dependency resolution
-        run: |
-          go mod edit -require=github.com/sagernet/sing-quic@v0.7.0
-          go mod tidy
-          go list -m github.com/sagernet/sing-quic github.com/sagernet/sing github.com/sagernet/quic-go
+      - name: Apply isolated v0.6.0 TUIC session-ID lifetime backport
+        run: bash tests/probe-tuic-backport.sh "$RUNNER_TEMP/tuic-backport-${GITHUB_RUN_ID}"
+      - name: Verify isolated dependency resolution
+        run: go list -m github.com/sagernet/sing-quic github.com/sagernet/sing github.com/sagernet/quic-go
       - name: Compile Xray and sing-box with production protocol tags
         run: go test -run '^$' -timeout=8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray ./internal/kernel/singbox
       - name: Repeated real TUIC UDP lease revocation race test
@@ -42,7 +43,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tuic-upgrade-probe-modules
+          name: tuic-backport-probe-modules
           path: |
             tuic-trial-go.mod
             tuic-trial-go.sum
