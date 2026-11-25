@@ -41,6 +41,7 @@ type Manager struct {
 	mu sync.Mutex
 	slots map[leaseKey]*leaseState
 	next uint64
+	releaseWG sync.WaitGroup // bounded asynchronous release RPCs
 }
 
 func NewManager(ctx context.Context, client LeaseClient) *Manager {
@@ -152,11 +153,26 @@ func (m *Manager) releaseFunc(key leaseKey,state *leaseState,cid uint64) func() 
 
 func (m *Manager) releaseRemote(key leaseKey,id string) {
 	if id=="" {return}
+	m.releaseWG.Add(1)
 	go func(){
+		defer m.releaseWG.Done()
 		ctx,cancel:=context.WithTimeout(context.Background(),m.timeout)
 		defer cancel()
 		_,_=m.client.DeviceLease(ctx,"release",key.uid,id,"")
 	}()
+}
+
+// WaitReleases permits graceful shutdown/test processes to drain outstanding
+// bounded best-effort release RPCs. Invoke only after no new connections can
+// acquire/release leases; sync.WaitGroup.Wait is not a concurrent admission
+// barrier. Remote TTL remains the fallback for abrupt process termination.
+func (m *Manager) WaitReleases(ctx context.Context) error {
+	done:=make(chan struct{})
+	go func() {m.releaseWG.Wait();close(done)}()
+	select {
+	case <-ctx.Done():return ctx.Err()
+	case <-done:return nil
+	}
 }
 
 func (m *Manager) lose(key leaseKey,state *leaseState) {
