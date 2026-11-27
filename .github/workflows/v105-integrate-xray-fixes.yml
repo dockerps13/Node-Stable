@@ -6,6 +6,7 @@ on:
       - feature/global-device-admission-v105
     paths:
       - '.github/workflows/v105-integrate-xray-fixes.yml'
+      - 'tests/probe-xray-udp-atomic.sh'
   workflow_dispatch:
 
 permissions:
