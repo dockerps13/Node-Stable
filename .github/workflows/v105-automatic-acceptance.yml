@@ -41,6 +41,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install Redis CLI for isolated Lua test handler
+        run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
       - name: Unit and panel lease client tests without Redis integration flag
         run: |
           go test -race -count=3 -timeout=5m ./internal/globaladmission
@@ -101,6 +103,7 @@ jobs:
           composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
           touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
           php xboard/tests/global-device-stage-bootstrap.php
+          sudo apt-get update -qq && sudo apt-get install -y redis-tools
       - name: Start isolated Laravel API
         run: |
           php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php >/tmp/v105-panel.log 2>&1 &
@@ -118,6 +121,7 @@ jobs:
         run: |
           response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
           echo "$response" | grep -F '"allowed":true'
+          redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
           go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
       - name: Stop test HTTP server
         if: always()
