@@ -1,0 +1,36 @@
+name: v1.0.5 staging acceptance tools static verification
+
+on:
+  pull_request:
+    paths:
+      - 'tests/staging-24h-collector.sh'
+      - 'tests/staging-live-rollback.sh'
+      - '.github/workflows/v105-staging-tools-lint.yml'
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'tests/staging-24h-collector.sh'
+      - 'tests/staging-live-rollback.sh'
+      - '.github/workflows/v105-staging-tools-lint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify shell syntax (no staging execution)
+        run: |
+          bash -n tests/staging-24h-collector.sh
+          test -f tests/staging-24h-collector.sh
+      - name: Reject production auto-deployment
+        run: |
+          ! grep -E 'systemctl (restart|stop|disable)|apt-get|iptables|nft ' tests/staging-24h-collector.sh
+          grep -Fq 'I_CONFIRM_DEDICATED_STAGING_NOT_PRODUCTION' tests/staging-24h-collector.sh
+      - name: Report scope
+        run: echo 'PASS static checks; 24h live soak has NOT been executed.'
