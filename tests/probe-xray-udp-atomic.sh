@@ -11,12 +11,23 @@ python3 - <<'PY'
 import json
 import os
 from pathlib import Path
+import subprocess
 
 m = json.loads(os.environ["XRAY_MODULE_JSON"])
 replacement = m.get("Replace", {})
 if replacement.get("Path") != "github.com/cedar2025/Xray-core":
     raise RuntimeError("unexpected Xray-core module replacement: %r" % replacement)
-source_dir = Path(replacement["Dir"])
+if not replacement.get("Dir"):
+    version = replacement.get("Version")
+    if not version:
+        raise RuntimeError("Xray replacement lacks version and local directory")
+    result = subprocess.check_output(
+        ["go", "mod", "download", "-json", replacement["Path"]+"@"+version],
+        text=True,
+    )
+    source_dir = Path(json.loads(result)["Dir"])
+else:
+    source_dir = Path(replacement["Dir"])
 source = source_dir / "transport/internet/udp/dispatcher.go"
 original = source.read_text()
 if "sync/atomic" in original:
