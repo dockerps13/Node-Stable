@@ -49,7 +49,7 @@ func TestRealXrayMuxTCPRevocation(t *testing.T) {
     clientPort := reserveXrayLoopbackPort(t)
     revocations := make(chan func(), 16)
     var releases atomic.Int64
-    server := New(config.KernelConfig{Type: "xray", LogLevel: "error"})
+    server := New(config.KernelConfig{Type: "xray", LogLevel: "error", CustomRoute: []map[string]any{{"type": "field", "ip": []string{"127.0.0.1/32"}, "outboundTag": "direct"}}})
     server.SetRevocableAdmissionFunc(func(uid int, sourceIP string, limit int, revoke func()) (func(), bool) {
         if uid != userID || limit != 1 || revoke == nil || sourceIP != "127.0.0.1" {
             return nil, false
