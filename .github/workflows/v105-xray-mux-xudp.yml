@@ -5,6 +5,9 @@ on:
     paths:
       - 'internal/kernel/xray/mux_real_e2e_test.go'
       - 'internal/kernel/xray/xudp_real_e2e_test.go'
+      - 'third_party/xray-core/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/v105-xray-mux-xudp.yml'
   push:
     branches:
@@ -12,6 +15,9 @@ on:
     paths:
       - 'internal/kernel/xray/mux_real_e2e_test.go'
       - 'internal/kernel/xray/xudp_real_e2e_test.go'
+      - 'third_party/xray-core/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/v105-xray-mux-xudp.yml'
   workflow_dispatch:
 
