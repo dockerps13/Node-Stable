@@ -69,6 +69,7 @@ type Xray struct {
 	cumTraffic       map[int][2]int64
 	speedLimitFunc   func(string) *rate.Limiter
 	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	revocableAdmissionFunc func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)
 	deviceChangeFunc func()
 
 	// running is set after a successful Start and cleared before shutdown.
@@ -158,6 +159,7 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		if x.admissionFunc != nil {
 			ld.SetAdmissionFunc(x.admissionFunc)
 		}
+		if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
 		if x.deviceChangeFunc != nil {
 			ld.SetDeviceChangeFunc(x.deviceChangeFunc)
 		}
@@ -194,8 +196,9 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	closeOld(old, oldLD)
 
 	x.updateDispatcherLimits(users)
-	if x.admissionFunc != nil && ld != nil {
-		ld.SetAdmissionFunc(x.admissionFunc)
+	if ld != nil {
+		if x.admissionFunc != nil { ld.SetAdmissionFunc(x.admissionFunc) }
+		if x.revocableAdmissionFunc != nil { ld.SetRevocableAdmissionFunc(x.revocableAdmissionFunc) }
 	}
 	x.updateBandwidthLimits(users)
 
@@ -312,6 +315,16 @@ func (x *Xray) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) 
 	if ld != nil {
 		ld.SetAdmissionFunc(fn)
 	}
+}
+
+// SetRevocableAdmissionFunc configures strict global admission with
+// per-connection closure on lease loss.
+func (x *Xray) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	x.mu.Lock()
+	x.revocableAdmissionFunc = fn
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil { ld.SetRevocableAdmissionFunc(fn) }
 }
 
 // SetDeviceChangeFunc provides immediate connection-change notifications.

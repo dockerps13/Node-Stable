@@ -69,6 +69,7 @@ type SingBox struct {
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
 	deviceLimitFunc  func(string) (int, bool)
 	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	revocableAdmissionFunc func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)
 	deviceChangeFunc func()
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
@@ -154,6 +155,35 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 		return fmt.Errorf("create sing-box instance: %w", err)
 	}
 
+	// Install the connection tracker before opening any inbound listeners.
+	// QUIC may dispatch UDP traffic immediately after instance.Start().
+	// Appending to the router's tracker slice after that point races with
+	// routePacketConnection and can let initial sessions bypass admission.
+	newTracker := NewConnTracker(0)
+	setTrackerUsers(newTracker, nodeConfig, users)
+	if s.speedLimitFunc != nil {
+		newTracker.SetSpeedLimitFunc(s.speedLimitFunc)
+	}
+	if s.deviceLimitFunc != nil {
+		newTracker.SetDeviceLimitFunc(s.deviceLimitFunc)
+	}
+	if s.admissionFunc != nil {
+		newTracker.SetAdmissionFunc(s.admissionFunc)
+	}
+	if s.revocableAdmissionFunc != nil {
+		newTracker.SetRevocableAdmissionFunc(s.revocableAdmissionFunc)
+	}
+	if s.deviceChangeFunc != nil {
+		newTracker.SetDeviceChangeFunc(s.deviceChangeFunc)
+	}
+	router := service.FromContext[adapter.Router](ctx)
+	if router == nil {
+		instance.Close()
+		cancel()
+		return fmt.Errorf("sing-box router unavailable before startup")
+	}
+	router.AppendTracker(newTracker)
+
 	if err := instance.Start(); err != nil {
 		instance.Close()
 		cancel()
@@ -202,24 +232,10 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	if oldTracker != nil {
 		s.retiredTrackers = append(s.retiredTrackers, oldTracker)
 	}
-	// Fresh tracker on full restart.
-	s.connTracker = NewConnTracker(0)
-	setTrackerUsers(s.connTracker, nodeConfig, users)
-	if s.speedLimitFunc != nil {
-		s.connTracker.SetSpeedLimitFunc(s.speedLimitFunc)
-	}
-	if s.deviceLimitFunc != nil {
-		s.connTracker.SetDeviceLimitFunc(s.deviceLimitFunc)
-	}
-	if s.admissionFunc != nil {
-		s.connTracker.SetAdmissionFunc(s.admissionFunc)
-	}
-	if s.deviceChangeFunc != nil {
-		s.connTracker.SetDeviceChangeFunc(s.deviceChangeFunc)
-	}
-
-	s.trackerRegistered = false
-	s.registerTracker(ctx)
+	// The new router received this tracker before its inbounds started.
+	// Publish it only after the new instance has started successfully.
+	s.connTracker = newTracker
+	s.trackerRegistered = true
 
 	// Recycle old instance in background — drain then close. Old obfs
 	// sessions remain on their old encrypted backend until drained.
@@ -594,6 +610,16 @@ func (s *SingBox) SetAdmissionFunc(fn func(userID int, sourceIP string, limit in
 	if s.connTracker != nil {
 		s.connTracker.SetAdmissionFunc(fn)
 	}
+}
+
+// SetRevocableAdmissionFunc enables strict remote admission and forced
+// connection closure when the lease is no longer valid.
+func (s *SingBox) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	s.mu.Lock()
+	s.revocableAdmissionFunc = fn
+	tracker := s.connTracker
+	s.mu.Unlock()
+	if tracker != nil { tracker.SetRevocableAdmissionFunc(fn) }
 }
 
 // SetDeviceChangeFunc wires fast device status updates without changing billing.

@@ -1,0 +1,10 @@
+{
+  "upstream": "github.com/cedar2025/Xray-core",
+  "version": "v0.0.0-20260409213332-f47935539965",
+  "patch": "UDP dispatcher connEntry.closed atomic Bool plus owned MUX UDP packet destination",
+  "mux_reader_original_sha256": "4bfbdc2eab86a3d0cc2b60bab490773f05efb2d3de28f55934edcb2bfa8e04d2",
+  "mux_reader_patched_sha256": "c4b65c155bb791d0c0c269d8f049e781a5e8fe57ba13f532749014a7d4e08f9d",
+  "source_sha256": "76bdf02b75c5c71c424bc177c4f6284d15b4b23c271b2b5653de0ced61b86dfe",
+  "patched_sha256": "1c422d1454f4c287796aba050326dc40e8dc99fdddc5291e4f1464df917ece94",
+  "scope": "test-only; repository Go module replacement not persisted"
+}

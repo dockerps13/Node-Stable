@@ -143,6 +143,7 @@ type ConnTracker struct {
 	// deviceLimitFunc resolves a user UUID to their device limit.
 	deviceLimitFunc  atomic.Pointer[func(uuid string) (int, bool)]
 	admissionFunc    atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
+	revocableAdmissionFunc atomic.Pointer[func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)]
 	deviceChangeFunc atomic.Pointer[func()]
 
 	// Multi-node device state from panel
@@ -174,6 +175,10 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 // SetAdmissionFunc configures shared per-machine atomic admission.
 func (t *ConnTracker) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
 	t.admissionFunc.Store(&fn)
+}
+
+func (t *ConnTracker) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	t.revocableAdmissionFunc.Store(&fn)
 }
 
 // SetDeviceChangeFunc supplies a nonblocking notification to report IP changes.
@@ -305,12 +310,37 @@ func (t *ConnTracker) RoutedConnection(
 			limit = value
 		}
 	}
-	if !t.admitDevice(us, uid, sourceIP, limit) {
+	// Global revocable leases are authoritative for admission. Keep local
+	// device/accounting stats, but never reject against stale snapshots.
+	localLimit := limit
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		localLimit = 0
+	}
+	if !t.admitDevice(us, uid, sourceIP, localLimit) {
 		conn.Close()
 		return conn
 	}
 	var releaseAdmission func()
-	if admission := t.admissionFunc.Load(); admission != nil {
+	var revokeMu sync.Mutex
+	var revokeTarget io.Closer
+	revoked := false
+	revoke := func() {
+		revokeMu.Lock()
+		revoked = true
+		target := revokeTarget
+		revokeMu.Unlock()
+		if target != nil { _ = target.Close() }
+	}
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		admission := t.revocableAdmissionFunc.Load()
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit, revoke)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return conn
+		}
+	} else if admission := t.admissionFunc.Load(); admission != nil {
 		var ok bool
 		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
 		if !ok {
@@ -342,8 +372,33 @@ func (t *ConnTracker) RoutedConnection(
 		_ = wrapped.Close()
 		return conn
 	}
+	revokeMu.Lock()
+	revokeTarget = wrapped
+	alreadyRevoked := revoked
+	revokeMu.Unlock()
+	if alreadyRevoked {
+		_ = wrapped.Close()
+		return conn
+	}
 	t.notifyDeviceChange()
 	return wrapped
+}
+
+// rejectedPacketConn makes a denied UDP session fail closed. sing-box can
+// cache the first datagram while matching routes, *before* invoking trackers.
+// Closing the original PacketConn alone is insufficient: a cached datagram
+// may still be returned by ReadPacket and forwarded to the upstream target.
+// Do not expose the original reader or any cached packets after denial.
+type rejectedPacketConn struct {
+	N.PacketConn
+}
+
+func (c *rejectedPacketConn) ReadPacket(_ *buf.Buffer) (singM.Socksaddr, error) {
+	return singM.Socksaddr{}, net.ErrClosed
+}
+
+func (c *rejectedPacketConn) WritePacket(_ *buf.Buffer, _ singM.Socksaddr) error {
+	return net.ErrClosed
 }
 
 // RoutedPacketConnection tracks UDP traffic and supports forced closure.
@@ -372,18 +427,43 @@ func (t *ConnTracker) RoutedPacketConnection(
 			limit = value
 		}
 	}
-	if !t.admitDevice(us, uid, sourceIP, limit) {
+	// Global revocable leases are authoritative for admission. Keep local
+	// device/accounting stats, but never reject against stale snapshots.
+	localLimit := limit
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		localLimit = 0
+	}
+	if !t.admitDevice(us, uid, sourceIP, localLimit) {
 		conn.Close()
-		return conn
+		return &rejectedPacketConn{PacketConn: conn}
 	}
 	var releaseAdmission func()
-	if admission := t.admissionFunc.Load(); admission != nil {
+	var revokeMu sync.Mutex
+	var revokeTarget io.Closer
+	revoked := false
+	revoke := func() {
+		revokeMu.Lock()
+		revoked = true
+		target := revokeTarget
+		revokeMu.Unlock()
+		if target != nil { _ = target.Close() }
+	}
+	if limit > 0 && t.revocableAdmissionFunc.Load() != nil {
+		admission := t.revocableAdmissionFunc.Load()
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit, revoke)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return &rejectedPacketConn{PacketConn: conn}
+		}
+	} else if admission := t.admissionFunc.Load(); admission != nil {
 		var ok bool
 		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
 		if !ok {
 			us.removeConn(sourceIP)
 			conn.Close()
-			return conn
+			return &rejectedPacketConn{PacketConn: conn}
 		}
 	}
 
@@ -404,8 +484,17 @@ func (t *ConnTracker) RoutedPacketConnection(
 		releaseAdmission: releaseAdmission,
 		limiter:          lim,
 		ctx:              ctx,
+		strictRevocation: limit > 0 && t.revocableAdmissionFunc.Load() != nil,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
+		_ = wrapped.Close()
+		return conn
+	}
+	revokeMu.Lock()
+	revokeTarget = wrapped
+	alreadyRevoked := revoked
+	revokeMu.Unlock()
+	if alreadyRevoked {
 		_ = wrapped.Close()
 		return conn
 	}
@@ -739,6 +828,11 @@ func (c *trackedConn) WriterReplaceable() bool { return c.limiter == nil }
 
 type trackedPacketConn struct {
 	N.PacketConn
+	// Keep the wrapper in the data path when a remote lease can revoke it.
+	strictRevocation bool
+	readMu sync.Mutex
+	activeReads int
+	underlyingClosed bool
 	tracker          *ConnTracker
 	us               *userStats
 	userID           int
@@ -775,7 +869,27 @@ func waitPacketBudget(ctx context.Context, limiter *rate.Limiter, n int) error {
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
+	if c.strictRevocation {
+		c.readMu.Lock()
+		if c.closed.Load() {
+			c.readMu.Unlock()
+			return singM.Socksaddr{}, net.ErrClosed
+		}
+		c.activeReads++
+		c.readMu.Unlock()
+		defer func() {
+			c.readMu.Lock()
+			c.activeReads--
+			closeUnderlying := c.closed.Load() && c.activeReads == 0 && !c.underlyingClosed
+			if closeUnderlying { c.underlyingClosed = true }
+			c.readMu.Unlock()
+			if closeUnderlying { _ = c.PacketConn.Close() }
+		}()
+	} else if c.closed.Load() {
+		return singM.Socksaddr{}, net.ErrClosed
+	}
 	dest, err := c.PacketConn.ReadPacket(buffer)
+	if c.closed.Load() { return singM.Socksaddr{}, net.ErrClosed }
 	if err != nil {
 		return dest, err
 	}
@@ -787,6 +901,7 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 }
 
 func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr) error {
+	if c.closed.Load() { buffer.Release(); return net.ErrClosed }
 	n := buffer.Len()
 	if err := waitPacketBudget(c.ctx, c.limiter, n); err != nil {
 		buffer.Release()
@@ -809,6 +924,22 @@ func (c *trackedPacketConn) Close() error {
 		}
 		c.tracker.removeConnRef(c.connID)
 		c.tracker.notifyDeviceChange()
+		if c.strictRevocation {
+			// sing-quic's UDP Close mutates session state concurrently with
+			// ReadPacket. Defer that mutation until an in-flight read returns.
+			// New reads and writes are rejected immediately by closed.
+			c.readMu.Lock()
+			closeUnderlying := c.activeReads == 0 && !c.underlyingClosed
+			if closeUnderlying { c.underlyingClosed = true }
+			c.readMu.Unlock()
+			if !closeUnderlying {
+				// An idle QUIC packet reader can otherwise remain blocked
+				// indefinitely and prevent the deferred underlying Close.
+				// A read deadline wakes the reader without mutating sing-quic's
+				// session map concurrently with ReadPacket.
+				return c.PacketConn.SetReadDeadline(time.Now())
+			}
+		}
 		return c.PacketConn.Close()
 	}
 	return nil
@@ -823,7 +954,20 @@ func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
 	}
 }
 
+// The guard adapters deliberately do not implement UnwrapPacketReader/Writer.
+// Returning trackedPacketConn directly would recursively unwrap itself.
+type leasePacketReader struct { conn *trackedPacketConn }
+func (r *leasePacketReader) ReadPacket(b *buf.Buffer) (singM.Socksaddr, error) {
+	return r.conn.ReadPacket(b)
+}
+type leasePacketWriter struct { conn *trackedPacketConn }
+func (w *leasePacketWriter) WritePacket(b *buf.Buffer, dest singM.Socksaddr) error {
+	return w.conn.WritePacket(b, dest)
+}
+
 func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc) {
+	// Returning the raw packet reader lets sing-box bypass revocation checks.
+	if c.strictRevocation { return &leasePacketReader{conn: c}, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -831,6 +975,7 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
+	if c.strictRevocation { return &leasePacketWriter{conn: c}, nil }
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
@@ -838,5 +983,5 @@ func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }
-func (c *trackedPacketConn) ReaderReplaceable() bool { return c.limiter == nil }
-func (c *trackedPacketConn) WriterReplaceable() bool { return c.limiter == nil }
+func (c *trackedPacketConn) ReaderReplaceable() bool { return c.limiter == nil && !c.strictRevocation }
+func (c *trackedPacketConn) WriterReplaceable() bool { return c.limiter == nil && !c.strictRevocation }

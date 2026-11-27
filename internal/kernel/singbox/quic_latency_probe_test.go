@@ -17,11 +17,25 @@ import (
 func TestQUICUDPAndOptionalTCPProbeCoexist(t *testing.T) {
     for _, protocol := range []string{"hysteria2", "tuic"} {
         t.Run(protocol, func(t *testing.T) {
-            reservation, err := net.ListenPacket("udp4", "127.0.0.1:0")
-            if err != nil { t.Fatal(err) }
-            port := reservation.LocalAddr().(*net.UDPAddr).Port
-            _ = reservation.Close()
-
+            // Reserve a port free in both TCP and UDP at selection time.
+            // A UDP-only reservation can select a TCP-occupied port, which
+            // causes the optional TCP probe to fail for reasons unrelated to
+            // the sing-box listener's startup behavior.
+            var port int
+            for attempt := 0; attempt < 32; attempt++ {
+                tcpReservation, err := net.Listen("tcp4", "127.0.0.1:0")
+                if err != nil { t.Fatal(err) }
+                candidate := tcpReservation.Addr().(*net.TCPAddr).Port
+                udpReservation, udpErr := net.ListenPacket("udp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(candidate)))
+                if udpErr == nil {
+                    port = candidate
+                    _ = udpReservation.Close()
+                    _ = tcpReservation.Close()
+                    break
+                }
+                _ = tcpReservation.Close()
+            }
+            if port == 0 { t.Fatal("unable to reserve a port free for TCP and UDP") }
             cert := testSelfSignedTLS(t)
             node := &model.NodeSpec{
                 Protocol: protocol, TLS: 1, ServerPort: port, ListenIP: "127.0.0.1",

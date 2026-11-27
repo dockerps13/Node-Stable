@@ -79,6 +79,7 @@ type LimitDispatcher struct {
 	globalDevices    map[int]map[string]bool
 	globalUpdated    time.Time
 	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	revocableAdmissionFunc func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)
 	deviceChangeFunc func()
 
 	// unlimitedIPs: users without device limit — sync.Map for lock-free access.
@@ -112,6 +113,13 @@ func (d *LimitDispatcher) SetAdmissionFunc(fn func(userID int, sourceIP string, 
 	d.mu.Unlock()
 }
 
+// SetRevocableAdmissionFunc enables opt-in global lease revocation.
+func (d *LimitDispatcher) SetRevocableAdmissionFunc(fn func(userID int, sourceIP string, limit int, revoke func()) (func(), bool)) {
+	d.mu.Lock()
+	d.revocableAdmissionFunc = fn
+	d.mu.Unlock()
+}
+
 // SetDeviceChangeFunc installs a nonblocking notification supplied by Service.
 func (d *LimitDispatcher) SetDeviceChangeFunc(fn func()) {
 	d.mu.Lock()
@@ -130,71 +138,101 @@ func (d *LimitDispatcher) notifyDeviceChange() {
 
 // reserveMachineSlot uses authenticated account identity to allocate one
 // distinct-IP slot across every protocol service on this machine.
-func (d *LimitDispatcher) reserveMachineSlot(email, sourceIP string) (func(), bool) {
+func (d *LimitDispatcher) reserveMachineSlot(email, sourceIP string, revoke func()) (func(), bool) {
 	d.mu.RLock()
 	fn := d.admissionFunc
+	strict := d.revocableAdmissionFunc
 	uid := d.emailToUID[email]
 	limit := d.deviceLimits[email]
 	d.mu.RUnlock()
-	if fn == nil || limit <= 0 {
-		return nil, true
-	}
+	if limit <= 0 { return nil, true }
+	if strict != nil { return strict(uid, sourceIP, limit, revoke) }
+	if fn == nil { return nil, true }
 	return fn(uid, sourceIP, limit)
 }
 
 // ─── routing.Dispatcher ──────────────────────────────────────────────────────
 
+// revokeTrackedLink interrupts both sides without replacing Xray's
+// concrete pipe.Reader, preserving mux/XUDP ownership semantics.
+func revokeTrackedLink(link *transport.Link) {
+	if link == nil { return }
+	common.Interrupt(link.Reader)
+	common.Interrupt(link.Writer)
+}
+
 func (d *LimitDispatcher) Dispatch(ctx context.Context, dest net.Destination) (*transport.Link, error) {
 	email, sourceIP, isTCP, err := d.identifyAndCheck(ctx, dest)
-	if err != nil {
-		return nil, err
+	if err != nil { return nil, err }
+
+	var gate sync.Mutex
+	var active *transport.Link
+	lost := false
+	revoke := func() {
+		gate.Lock()
+		lost = true
+		link := active
+		gate.Unlock()
+		revokeTrackedLink(link)
 	}
-	release, admitted := d.reserveMachineSlot(email, sourceIP)
+	release, admitted := d.reserveMachineSlot(email, sourceIP, revoke)
 	if !admitted {
-		if isTCP {
-			d.delConn(email, sourceIP)
-		}
+		if isTCP { d.delConn(email, sourceIP) }
 		return nil, errors.New("machine device limit exceeded")
 	}
 
 	link, err := d.innerDisp.Dispatch(ctx, dest)
 	if err != nil {
-		if email != "" && isTCP {
-			d.delConn(email, sourceIP)
-		}
-		if release != nil {
-			release()
-		}
+		if email != "" && isTCP { d.delConn(email, sourceIP) }
+		if release != nil { release() }
 		return nil, err
 	}
+	if email != "" { d.trackLink(link, email, sourceIP, isTCP, release) }
 
-	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP, release)
+	gate.Lock()
+	active = link
+	alreadyLost := lost
+	gate.Unlock()
+	if alreadyLost {
+		revokeTrackedLink(link)
+		return nil, errors.New("global device lease revoked")
 	}
 	return link, nil
 }
 
 func (d *LimitDispatcher) DispatchLink(ctx context.Context, dest net.Destination, link *transport.Link) error {
 	email, sourceIP, isTCP, err := d.identifyAndCheck(ctx, dest)
-	if err != nil {
-		return err
+	if err != nil { return err }
+
+	var gate sync.Mutex
+	ready := false
+	lost := false
+	revoke := func() {
+		gate.Lock()
+		lost = true
+		shouldInterrupt := ready
+		gate.Unlock()
+		if shouldInterrupt { revokeTrackedLink(link) }
 	}
-	release, admitted := d.reserveMachineSlot(email, sourceIP)
+	release, admitted := d.reserveMachineSlot(email, sourceIP, revoke)
 	if !admitted {
-		if isTCP {
-			d.delConn(email, sourceIP)
-		}
+		if isTCP { d.delConn(email, sourceIP) }
 		return errors.New("machine device limit exceeded")
 	}
 
 	var cleanup func()
-	if email != "" {
-		cleanup = d.trackLink(link, email, sourceIP, isTCP, release)
+	if email != "" { cleanup = d.trackLink(link, email, sourceIP, isTCP, release) }
+	gate.Lock()
+	ready = true
+	alreadyLost := lost
+	gate.Unlock()
+	if alreadyLost {
+		revokeTrackedLink(link)
+		if cleanup != nil { cleanup() }
+		return errors.New("global device lease revoked")
 	}
 	err = d.innerDisp.DispatchLink(ctx, dest, link)
-	if err != nil && cleanup != nil {
-		cleanup()
-	}
+	if err != nil && cleanup != nil { cleanup() }
 	return err
 }
 
@@ -389,6 +427,19 @@ func (d *LimitDispatcher) checkDeviceLimit(email, sourceIP string, isTCP bool) b
 			ic := v.(*ipCounter)
 			rv, _ := ic.ips.LoadOrStore(sourceIP, &atomic.Int64{})
 			rv.(*atomic.Int64).Add(1)
+		}
+		return false
+	}
+	// Strict global mode delegates quota decisions exclusively to Redis.
+	// Retain local counts for reporting and lifecycle cleanup only.
+	if d.revocableAdmissionFunc != nil {
+		if isTCP {
+			ips := d.limitedIPs[email]
+			if ips == nil {
+				ips = make(map[string]int)
+				d.limitedIPs[email] = ips
+			}
+			ips[sourceIP]++
 		}
 		return false
 	}

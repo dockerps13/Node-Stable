@@ -87,6 +87,24 @@ func testProtocolClientRoundTrip(t *testing.T, protocols []string) {
 				t.Fatal(err)
 			}
 			defer server.Stop()
+			if protocol == "mieru" {
+				// Mieru starts its TCP underlay asynchronously. Its Start may
+				// return before the TCP listener is accepting connections.
+				// Wait only for listener readiness; retain the real HTTP
+				// roundtrip and accounting assertions below.
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					probe, probeErr := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 150*time.Millisecond)
+					if probeErr == nil {
+						_ = probe.Close()
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("mieru TCP listener not ready after startup: %v", probeErr)
+					}
+					time.Sleep(25 * time.Millisecond)
+				}
+			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()

@@ -1,0 +1,54 @@
+name: v1.0.5 isolated Redis HTTP soak
+on:
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'tests/redis-http-soak.sh'
+      - '.github/workflows/v105-redis-http-soak.yml'
+  pull_request:
+    paths:
+      - 'tests/redis-http-soak.sh'
+      - '.github/workflows/v105-redis-http-soak.yml'
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: 'Isolated soak duration (60-18000 seconds, hosted runner limit applies)'
+        required: true
+        type: choice
+        default: '180'
+        options:
+          - '180'
+          - '1800'
+          - '7200'
+          - '18000'
+permissions:
+  contents: read
+jobs:
+  redis-http-soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Redis CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
+      - name: Run isolated Redis/HTTP authority soak
+        env:
+          SOAK_DURATION: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '180' }}
+        run: bash tests/redis-http-soak.sh "$SOAK_DURATION" "$RUNNER_TEMP/redis-http-soak"
+      - name: Upload isolated soak logs and resource samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-redis-http-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/redis-http-soak/
+          if-no-files-found: warn

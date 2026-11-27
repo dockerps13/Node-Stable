@@ -1,0 +1,76 @@
+name: v1.0.5 integrate verified Xray UDP+MUX fixes
+
+on:
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - '.github/workflows/v105-integrate-xray-fixes.yml'
+      - 'tests/probe-xray-udp-atomic.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: v105-integrate-xray-fixes
+  cancel-in-progress: false
+
+jobs:
+  integrate-xray:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/global-device-admission-v105
+          persist-credentials: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Require unmodified release module before integration
+        run: |
+          test ! -e third_party/xray-core
+          grep -Fq 'replace github.com/xtls/xray-core => github.com/cedar2025/Xray-core' go.mod
+      - name: Build reviewable Xray fork source copy with verified patches
+        run: |
+          bash tests/probe-xray-udp-atomic.sh ./third_party/xray-core
+          go mod edit -replace=github.com/xtls/xray-core=./third_party/xray-core
+          go mod tidy
+          test -f third_party/xray-core/LICENSE
+          test -f third_party/xray-core/xray-udp-patch-provenance.json
+          grep -Fq 'closed atomic.Bool' third_party/xray-core/transport/internet/udp/dispatcher.go
+          grep -Fq 'b.UDP = &destination' third_party/xray-core/common/mux/reader.go
+          go list -m -json github.com/xtls/xray-core | grep -F 'third_party/xray-core'
+          go mod verify
+      - name: Guard against oversized or unexpected source copy
+        run: |
+          test "$(du -sm third_party/xray-core | cut -f1)" -le 120
+          test "$(find third_party/xray-core -type f | wc -l)" -le 20000
+          test ! -e third_party/xray-core/.git
+      - name: Repeat real XUDP grant/revoke traffic under race detector
+        run: go test -race -count=20 -timeout=12m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
+      - name: Real Xray multiplexed TCP roundtrip and revocation
+        run: go test -race -count=5 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
+      - name: Existing sing-box and Xray global device admission regression
+        run: go test -race -count=1 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray ./internal/kernel/singbox
+      - name: Verify Linux release binaries contain fixed module
+        run: |
+          make build-linux
+          ./xboard-node-linux-amd64 -v
+          ./xbctl-linux-amd64 version
+      - name: Commit only verified production dependency to feature branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f third_party/xray-core
+          git add go.mod go.sum
+          git diff --cached --quiet && { echo "No integration changes"; exit 1; } || true
+          git commit -m "fix(v1.0.5): integrate verified Xray UDP+MUX race fixes"
+          git push origin HEAD:feature/global-device-admission-v105
+      - name: Dump dependency diagnostics on failure
+        if: failure()
+        run: |
+          git status --short | head -80
+          go list -m github.com/xtls/xray-core || true
