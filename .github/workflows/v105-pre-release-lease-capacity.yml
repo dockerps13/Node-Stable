@@ -1,0 +1,53 @@
+name: v1.0.5 pre-release isolated Redis lease capacity
+on:
+  push:
+    branches: [feature/global-device-admission-v105]
+    paths:
+      - '.github/workflows/v105-pre-release-lease-capacity.yml'
+      - 'internal/globaladmission/redis_lease.lua'
+      - 'tests/redis-lease-benchmark.py'
+  pull_request:
+    paths:
+      - '.github/workflows/v105-pre-release-lease-capacity.yml'
+      - 'internal/globaladmission/redis_lease.lua'
+      - 'tests/redis-lease-benchmark.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  capacity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Benchmark Lua renewal under 32 to 4096 active owner leases
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          python3 tests/redis-lease-benchmark.py \
+            --duration 5 --workers 32 --cardinalities 32,256,1024,2048,4096 \
+            --output evidence/lease-capacity.json
+          python3 - <<'PY'
+          import json
+          p='evidence/lease-capacity.json'
+          data=json.load(open(p))
+          cases=data['cases']
+          assert len(cases)==5
+          assert all(c['operations']>0 and c['latency_ms']['p99']>=0 for c in cases)
+          print('PASS: successful renewals at all configured active-lease cardinalities.')
+          print('NOT TESTED: actual 4096 concurrent client sockets, Laravel HTTP, two live nodes, 24h staging.')
+          PY
+          sha256sum evidence/lease-capacity.json > evidence/SHA256SUMS
+      - name: Upload evidence for release review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-pre-release-redis-capacity-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
