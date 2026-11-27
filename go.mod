@@ -32,11 +32,12 @@ require (
 	github.com/sagernet/sing-box v1.13.2
 	github.com/shirou/gopsutil/v4 v4.26.2
 	github.com/xtls/xray-core v1.260327.0
-	golang.org/x/net v0.52.0
 	golang.org/x/term v0.41.0
 	golang.org/x/time v0.12.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require golang.org/x/net v0.52.0 // indirect
 
 require (
 	cloud.google.com/go/auth v0.16.5 // indirect
@@ -240,7 +241,7 @@ require (
 	go.uber.org/zap/exp v0.3.0 // indirect
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
-	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/crypto v0.49.0
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
@@ -266,3 +267,5 @@ replace github.com/sagernet/sing-box => github.com/cedar2025/sing-box v1.14.0-al
 replace github.com/anytls/sing-anytls => ./third_party/sing-anytls
 
 replace github.com/xtls/xray-core => github.com/cedar2025/Xray-core v0.0.0-20260409213332-f47935539965
+
+replace github.com/sagernet/sing-quic => ./third_party/sing-quic
