@@ -1,0 +1,34 @@
+name: v1.0.5 real Xray MUX XUDP isolated probe
+
+on:
+  pull_request:
+    paths:
+      - 'internal/kernel/xray/mux_real_e2e_test.go'
+      - 'internal/kernel/xray/xudp_real_e2e_test.go'
+      - '.github/workflows/v105-xray-mux-xudp.yml'
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'internal/kernel/xray/mux_real_e2e_test.go'
+      - 'internal/kernel/xray/xudp_real_e2e_test.go'
+      - '.github/workflows/v105-xray-mux-xudp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-xray-mux-xudp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Real VLESS MUX TCP proxy roundtrip and revocation
+        run: go test -v -race -count=3 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
+      - name: Real XUDP through VLESS MUX with SOCKS UDP association
+        run: go test -v -race -count=3 -timeout=8m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
