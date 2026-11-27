@@ -1,0 +1,67 @@
+name: v1.0.5 disposable systemd upgrade rollback rehearsal
+
+on:
+  pull_request:
+    paths:
+      - 'tests/systemd-staging-rollback.sh'
+      - '.github/workflows/v105-systemd-staging-rollback.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'third_party/xray-core/**'
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'tests/systemd-staging-rollback.sh'
+      - '.github/workflows/v105-systemd-staging-rollback.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'third_party/xray-core/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  systemd-rollback-rehearsal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - name: Checkout unchanged main baseline
+        uses: actions/checkout@v4
+        with:
+          path: baseline
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: candidate/go.mod
+          cache-dependency-path: candidate/go.sum
+      - name: Check disposable host supports real systemd
+        run: |
+          test "$(ps -p 1 -o comm=)" = systemd
+          systemctl --version
+          sudo systemctl is-system-running || true
+      - name: Build baseline service binary
+        working-directory: baseline
+        run: make build-linux
+      - name: Build candidate service binary
+        working-directory: candidate
+        run: make build-linux
+      - name: Verify staged systemd start upgrade failure and rollback
+        run: bash candidate/tests/systemd-staging-rollback.sh "$GITHUB_WORKSPACE/baseline/xboard-node-linux-amd64" "$GITHUB_WORKSPACE/candidate/xboard-node-linux-amd64" "$RUNNER_TEMP/v105-systemd-stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+      - name: Upload systemd staging evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-systemd-staging-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/v105-systemd-stage-${{ github.run_id }}-${{ github.run_attempt }}/systemd-evidence.log
+            ${{ runner.temp }}/v105-systemd-stage-${{ github.run_id }}-${{ github.run_attempt }}/baseline.sha256
+            ${{ runner.temp }}/v105-systemd-stage-${{ github.run_id }}-${{ github.run_attempt }}/candidate.sha256
+          if-no-files-found: warn
