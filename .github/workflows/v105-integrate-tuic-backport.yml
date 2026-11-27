@@ -1,0 +1,63 @@
+name: v1.0.5 integrate verified TUIC dependency backport
+
+on:
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - '.github/workflows/v105-integrate-tuic-backport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/global-device-admission-v105
+          persist-credentials: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Ensure no already-integrated local dependency
+        run: |
+          test ! -e third_party/sing-quic
+          ! grep -q 'replace github.com/sagernet/sing-quic => ./third_party/sing-quic' go.mod
+      - name: Materialize patched sing-quic v0.6.0 as tracked local module
+        run: |
+          bash tests/probe-tuic-backport.sh ./third_party/sing-quic
+          test -f third_party/sing-quic/LICENSE
+          grep -q 'sessionID := message.sessionID' third_party/sing-quic/tuic/service_packet.go
+          go mod verify
+      - name: Verify production-tag compilation uses local module
+        run: |
+          go list -m -json github.com/sagernet/sing-quic | tee tuic-integrated-module.json
+          grep -q 'third_party/sing-quic' tuic-integrated-module.json
+          go test -run '^$' -timeout=8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray ./internal/kernel/singbox
+      - name: Prove real Hysteria2 and TUIC revocation remains race free
+        run: go test -race -count=12 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
+      - name: Verify release-binary compilation with integrated source
+        run: |
+          make build-linux
+          ./xboard-node-linux-amd64 -v
+          ./xbctl-linux-amd64 version
+      - name: Commit verified vendored module only to the feature branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f third_party/sing-quic
+          git add go.mod go.sum
+          git diff --cached --check
+          git diff --cached --quiet && { echo "No integration changes; refusing empty commit"; exit 1; } || true
+          git commit -m "fix(v1.0.5): integrate verified TUIC session-ID lifetime backport into Go module"
+          git push origin HEAD:feature/global-device-admission-v105
+      - name: Record generated module provenance on failure
+        if: failure()
+        run: |
+          git status --short
+          go list -m github.com/sagernet/sing-quic || true
