@@ -11,6 +11,13 @@ on:
       - 'go.mod'
       - 'go.sum'
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/v105-automatic-acceptance.yml'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
 
 permissions:
   contents: read
@@ -135,6 +142,7 @@ jobs:
           composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
           touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
           php xboard/tests/global-device-stage-bootstrap.php
+          sudo apt-get update -qq && sudo apt-get install -y redis-tools
       - name: Start isolated Laravel HTTP
         run: |
           php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php > /tmp/v105-auto-panel.log 2>&1 &
@@ -157,6 +165,7 @@ jobs:
             echo "Candidate commit: $GITHUB_SHA"
             response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
             echo "$response" | grep -F '"allowed":true'
+            redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
             go test -race -count=1 -timeout=120s -v ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
           } 2>&1 | tee acceptance-evidence/real-laravel.log
       - name: Stop isolated PHP server
