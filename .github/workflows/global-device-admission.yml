@@ -53,6 +53,33 @@ jobs:
         run: go test -race -count=2 -timeout=90s ./internal/panel -run '^TestDeviceLease'
       - name: Xray and sing-box revocation race regression
         run: go test -race -count=2 -timeout=8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray ./internal/kernel/singbox
+      - name: Repeated concurrent Xray strict lease callback regression
+        run: go test -race -count=20 -timeout=5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray -run '^TestStrictXrayConcurrentLeaseRevocationLifecycle
+      - name: Repeated real QUIC UDP revoke/reconnect race regression
+        run: go test -race -count=12 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
+      - name: Install Redis CLI
+        run: sudo apt-get update -qq && sudo apt-get install -y redis-tools
+      - name: Redis lease atomicity integration
+        run: bash tests/global-device-redis.sh
+      - name: Two authenticated node clients over HTTP and Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run TestTwoMachineClientsHTTPRedisAuthority
+      - name: Two independent node OS processes through HTTP and Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=90s ./internal/globaladmission -run TestTwoIndependentNodeProcesses
+      - name: Redis lease cardinality latency benchmark (isolated, short-run)
+        run: |
+          python3 tests/redis-lease-benchmark.py --duration 8 --workers 12 --cardinalities 32,256 --output redis-lease-benchmark.json
+      - name: Upload Redis benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-lease-cardinality-benchmark
+          path: redis-lease-benchmark.json
+          if-no-files-found: warn
+
       - name: Repeated real QUIC UDP revoke/reconnect race regression
         run: go test -race -count=12 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
       - name: Install Redis CLI
