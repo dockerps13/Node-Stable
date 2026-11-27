@@ -266,6 +266,6 @@ replace github.com/sagernet/sing-box => github.com/cedar2025/sing-box v1.14.0-al
 
 replace github.com/anytls/sing-anytls => ./third_party/sing-anytls
 
-replace github.com/xtls/xray-core => github.com/cedar2025/Xray-core v0.0.0-20260409213332-f47935539965
+replace github.com/xtls/xray-core => ./third_party/xray-core
 
 replace github.com/sagernet/sing-quic => ./third_party/sing-quic
