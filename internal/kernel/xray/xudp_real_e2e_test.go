@@ -148,14 +148,16 @@ drain:
     }
     if revoked==0 {t.Fatal("no XUDP lease callbacks available for revocation")}
     time.Sleep(150*time.Millisecond)
-    if _,err:=udp.Write(append(append([]byte{},header...),[]byte("xudp-after-revoke")...));err!=nil {
-        t.Fatalf("XUDP write after revocation: %v",err)
-    }
-    _=udp.SetReadDeadline(time.Now().Add(750*time.Millisecond))
-    n,err:=udp.Read(recv)
-    if err==nil { t.Fatalf("revoked XUDP still reached relay, packet=%q",recv[:n]) }
-    var netErr net.Error
-    if !errors.As(err,&netErr) || !netErr.Timeout() {
-        t.Fatalf("post-revoke XUDP read unexpectedly failed: %v",err)
+    _, writeErr:=udp.Write(append(append([]byte{},header...),[]byte("xudp-after-revoke")...))
+    // Some Xray versions immediately close the client association on revoke
+    // (write error), others silently drop the outbound packet (read timeout).
+    if writeErr==nil {
+        _=udp.SetReadDeadline(time.Now().Add(750*time.Millisecond))
+        n,readErr:=udp.Read(recv)
+        if readErr==nil { t.Fatalf("revoked XUDP still reached relay, packet=%q",recv[:n]) }
+        var netErr net.Error
+        if !errors.As(readErr,&netErr) || !netErr.Timeout() {
+            t.Fatalf("post-revoke XUDP read unexpectedly failed: %v",readErr)
+        }
     }
 }
