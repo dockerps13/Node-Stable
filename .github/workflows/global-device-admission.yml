@@ -76,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: redis-lease-cardinality-benchmark
+          name: redis-lease-cardinality-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
           path: redis-lease-benchmark.json
           if-no-files-found: warn
 
