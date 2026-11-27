@@ -27,10 +27,14 @@ jobs:
       - name: Verify shell syntax (no staging execution)
         run: |
           bash -n tests/staging-24h-collector.sh
+          bash -n tests/staging-live-rollback.sh
           test -f tests/staging-24h-collector.sh
+          test -f tests/staging-live-rollback.sh
       - name: Reject production auto-deployment
         run: |
           ! grep -E 'systemctl (restart|stop|disable)|apt-get|iptables|nft ' tests/staging-24h-collector.sh
           grep -Fq 'I_CONFIRM_DEDICATED_STAGING_NOT_PRODUCTION' tests/staging-24h-collector.sh
+          grep -Fq 'I_CONFIRM_DEDICATED_STAGING_NOT_PRODUCTION' tests/staging-live-rollback.sh
+          grep -Fq 'trap' tests/staging-live-rollback.sh
       - name: Report scope
         run: echo 'PASS static checks; 24h live soak has NOT been executed.'
