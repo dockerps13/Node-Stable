@@ -100,9 +100,19 @@ printf '#!/bin/sh\nexit 42\n' > "$stage/injected-failure"
 chmod 755 "$stage/injected-failure"
 sudo -n install -m 755 "$stage/injected-failure" "$bin.next"
 sudo -n mv -f "$bin.next" "$bin"
-if sudo -n systemctl restart "$unit"; then
-  die "the deliberately bad executable unexpectedly restarted"
-fi
-printf 'fault_detected_utc=%s\n' "$(date -u +%FT%TZ)" >> "$stage/evidence.txt"
+# Type=simple systemd units can return success from systemctl restart
+# before the executable has exited. Confirm the injected exit status instead
+# of treating restart's return code as evidence of a working service.
+sudo -n systemctl restart "$unit" || true
+injected_failure_observed=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if [[ "$(systemctl show "$unit" -p ExecMainStatus --value)" == 42 ]]; then
+    injected_failure_observed=true
+    break
+  fi
+  sleep 1
+done
+[[ "$injected_failure_observed" == true ]] || die "injected failure exit 42 was not observed; refusing false PASS"
+printf 'fault_detected_utc=%s\nfault_exit_status=42\n' "$(date -u +%FT%TZ)" >> "$stage/evidence.txt"
 # Trigger exit trap for deterministic automatic rollback.
 echo "PASS: candidate live staging checks and injected start failure confirmed; restoring baseline now"
