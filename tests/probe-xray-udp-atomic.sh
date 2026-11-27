@@ -31,6 +31,8 @@ if not src:
     src = json.loads(output)["Dir"]
 dst = Path(os.environ["XRAY_PATCH_DST"]).resolve()
 shutil.copytree(Path(src), dst)
+# Go module-cache directories are read-only; make the isolated root writable.
+dst.chmod(dst.stat().st_mode | 0o700)
 target = dst / "transport/internet/udp/dispatcher.go"
 target.chmod(target.stat().st_mode | 0o200)
 original = target.read_text()
