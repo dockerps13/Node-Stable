@@ -1,30 +1,15 @@
 name: v1.0.5 automatic isolated functional acceptance
-
 on:
   push:
-    branches:
-      - feature/global-device-admission-v105
-    paths:
-      - '.github/workflows/v105-automatic-acceptance.yml'
-      - 'internal/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-  workflow_dispatch:
+    branches: [feature/global-device-admission-v105]
+    paths: ['.github/workflows/v105-automatic-acceptance.yml', 'internal/**', 'third_party/**', 'go.mod', 'go.sum']
   pull_request:
-    paths:
-      - '.github/workflows/v105-automatic-acceptance.yml'
-      - 'internal/**'
-      - 'third_party/**'
-      - 'go.mod'
-      - 'go.sum'
-
+    paths: ['.github/workflows/v105-automatic-acceptance.yml', 'internal/**', 'third_party/**', 'go.mod', 'go.sum']
+  workflow_dispatch:
 permissions:
   contents: read
-
 jobs:
   real-protocols:
-    name: Real Xray XUDP and QUIC traffic/revocation
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -35,34 +20,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run real Xray MUX TCP, XUDP and Hysteria2/TUIC revocation probes
-        shell: bash
+      - name: Xray MUX TCP and XUDP actual roundtrip
         run: |
-          set -euo pipefail
-          mkdir -p acceptance-evidence
-          {
-            echo "Candidate commit: $GITHUB_SHA"
-            go test -v -race -count=2 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
-            go test -v -race -count=2 -timeout=8m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
-            go test -v -race -count=4 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
-          } 2>&1 | tee acceptance-evidence/real-protocols.log
-      - name: Upload real protocol evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-real-protocols-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  redis-two-processes:
-    name: Redis concurrent lease and two independent node processes
+          go test -v -race -count=2 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
+          go test -v -race -count=2 -timeout=8m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
+      - name: Hysteria2 and TUIC UDP revocation under race detector
+        run: go test -v -race -count=4 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
+  redis-admission:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,36 +41,25 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run race, Redis and two-process lease acceptance
-        shell: bash
+      - name: Unit and panel lease client tests without Redis integration flag
         run: |
-          set -euo pipefail
-          mkdir -p acceptance-evidence
-          {
-            echo "Candidate commit: $GITHUB_SHA"
-            # Standard unit/race tests run without enabling Redis integration globally.
-            go test -race -count=3 -timeout=5m ./internal/globaladmission
-            go test -race -count=2 -timeout=90s ./internal/panel -run '^TestDeviceLease'
-            # Run Redis integration cases individually, never concurrently in one
-            # go test package invocation: they share the local test Redis fixture.
-            GLOBAL_ADMISSION_REDIS_INTEGRATION=1 go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoMachineClientsHTTPRedisAuthority
-      - name: Upload Redis lease evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-redis-two-processes-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  real-laravel:
-    name: Real isolated Laravel HTTP + Redis + two node processes
+          go test -race -count=3 -timeout=5m ./internal/globaladmission
+          go test -race -count=2 -timeout=90s ./internal/panel -run '^TestDeviceLease'
+      - name: Two machine clients using test Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoMachineClientsHTTPRedisAuthority$'
+      - name: Two separate OS processes using test Redis
+        env:
+          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
+        run: go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
+  laravel-two-node:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
       redis:
         image: redis:7-alpine
-        ports:
-          - 6379:6379
+        ports: ['6379:6379']
     env:
       APP_ENV: testing
       APP_DEBUG: 'false'
@@ -137,338 +96,47 @@ jobs:
           php-version: '8.3'
           extensions: redis, pdo_sqlite, mbstring, xml, curl, zip, bcmath
           coverage: none
-      - name: Install and initialize isolated Laravel
+      - name: Prepare isolated Laravel
         run: |
           composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
           touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
           php xboard/tests/global-device-stage-bootstrap.php
-          sudo apt-get update -qq && sudo apt-get install -y redis-tools
-      - name: Start isolated Laravel HTTP
+      - name: Start isolated Laravel API
         run: |
-          php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php > /tmp/v105-auto-panel.log 2>&1 &
-          echo $! > /tmp/v105-auto-panel.pid
+          php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php >/tmp/v105-panel.log 2>&1 &
+          echo $! > /tmp/v105-panel.pid
           for i in $(seq 1 30); do
             status="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Accept: application/json' http://127.0.0.1:8765/api/v2/server/device-lease || true)"
             if [ "$status" != "000" ]; then exit 0; fi
             sleep 1
           done
           exit 1
-      - name: Authenticated two-node HTTP/Redis lease acceptance
-        shell: bash
+      - name: Verify authenticated lease and two process integration
         env:
           GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
           GLOBAL_ADMISSION_REAL_PANEL_URL: http://127.0.0.1:8765
         run: |
-          set -euo pipefail
-          mkdir -p acceptance-evidence
-          {
-            echo "Candidate commit: $GITHUB_SHA"
-            response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
-            echo "$response" | grep -F '"allowed":true'
-            redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
-            go test -race -count=1 -timeout=120s -v ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
-          } 2>&1 | tee acceptance-evidence/real-laravel.log
-      - name: Stop isolated PHP server
+          response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
+          echo "$response" | grep -F '"allowed":true'
+          go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
+      - name: Stop test HTTP server
         if: always()
         run: |
-          if [ -f /tmp/v105-auto-panel.pid ]; then kill "$(cat /tmp/v105-auto-panel.pid)" 2>/dev/null || true; fi
-      - name: Upload Laravel/Redis evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-laravel-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  acceptance-report:
-    name: Publish CI scope and result summary
-    needs: [real-protocols, redis-two-processes, real-laravel]
+          if [ -f /tmp/v105-panel.pid ]; then kill "$(cat /tmp/v105-panel.pid)" 2>/dev/null || true; fi
+  summary:
+    runs-on: ubuntu-latest
+    needs: [real-protocols, redis-admission, laravel-two-node]
     if: always()
-    runs-on: ubuntu-latest
     steps:
-      - name: Record honest automatic acceptance result
+      - name: Write results and keep live staging gates unverified
         env:
-          PROTOCOL_RESULT: ${{ needs.real-protocols.result }}
-          REDIS_RESULT: ${{ needs.redis-two-processes.result }}
-          LARAVEL_RESULT: ${{ needs.real-laravel.result }}
-        shell: bash
+          PROTOCOL: ${{ needs.real-protocols.result }}
+          REDIS: ${{ needs.redis-admission.result }}
+          LARAVEL: ${{ needs.laravel-two-node.result }}
         run: |
-          set -eu
-          {
-            echo '# v1.0.5 automatic isolated acceptance'
-            echo
-            echo "Commit: \`$GITHUB_SHA\`"
-            echo
-            echo "| Gate | Outcome |"
-            echo "| --- | --- |"
-            echo "| Real Xray/XUDP and QUIC revocation | $PROTOCOL_RESULT |"
-            echo "| Redis lease concurrency and node processes | $REDIS_RESULT |"
-            echo "| Real isolated Laravel HTTP + Redis | $LARAVEL_RESULT |"
-            echo "| 24-hour dual-host production-equivalent soak | NOT RUN |"
-            echo "| Live authenticated systemd failure/rollback in staging | NOT RUN |"
-            echo
-            echo 'CI does not contact the production panel or node. A successful CI run is **not** a release approval.'
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PROTOCOL_RESULT" = success
-          test "$REDIS_RESULT" = success
-          test "$LARAVEL_RESULT" = success
-
-            GLOBAL_ADMISSION_REDIS_INTEGRATION=1 go test -race -count=1 -timeout=120s ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses
-      - name: Upload Redis lease evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-redis-two-processes-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  real-laravel:
-    name: Real isolated Laravel HTTP + Redis + two node processes
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-    env:
-      APP_ENV: testing
-      APP_DEBUG: 'false'
-      LOG_CHANNEL: stderr
-      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      CACHE_STORE: array
-      CACHE_DRIVER: array
-      SESSION_DRIVER: array
-      QUEUE_CONNECTION: sync
-      REDIS_CLIENT: phpredis
-      REDIS_HOST: 127.0.0.1
-      REDIS_PORT: '6379'
-      REDIS_PASSWORD: ''
-      REDIS_PREFIX: ''
-      DB_CONNECTION: sqlite
-      DB_DATABASE: ../v105-stage.sqlite
-      GLOBAL_DEVICE_ADMISSION_ENABLED: 'true'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: dockerps13/Xboard
-          ref: feature/global-device-admission-v105
-          path: xboard
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          extensions: redis, pdo_sqlite, mbstring, xml, curl, zip, bcmath
-          coverage: none
-      - name: Install and initialize isolated Laravel
-        run: |
-          composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
-          touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
-          php xboard/tests/global-device-stage-bootstrap.php
-          sudo apt-get update -qq && sudo apt-get install -y redis-tools
-      - name: Start isolated Laravel HTTP
-        run: |
-          php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php > /tmp/v105-auto-panel.log 2>&1 &
-          echo $! > /tmp/v105-auto-panel.pid
-          for i in $(seq 1 30); do
-            status="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Accept: application/json' http://127.0.0.1:8765/api/v2/server/device-lease || true)"
-            if [ "$status" != "000" ]; then exit 0; fi
-            sleep 1
-          done
-          exit 1
-      - name: Authenticated two-node HTTP/Redis lease acceptance
-        shell: bash
-        env:
-          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
-          GLOBAL_ADMISSION_REAL_PANEL_URL: http://127.0.0.1:8765
-        run: |
-          set -euo pipefail
-          mkdir -p acceptance-evidence
-          {
-            echo "Candidate commit: $GITHUB_SHA"
-            response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
-            echo "$response" | grep -F '"allowed":true'
-            redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
-            go test -race -count=1 -timeout=120s -v ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
-          } 2>&1 | tee acceptance-evidence/real-laravel.log
-      - name: Stop isolated PHP server
-        if: always()
-        run: |
-          if [ -f /tmp/v105-auto-panel.pid ]; then kill "$(cat /tmp/v105-auto-panel.pid)" 2>/dev/null || true; fi
-      - name: Upload Laravel/Redis evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-laravel-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  acceptance-report:
-    name: Publish CI scope and result summary
-    needs: [real-protocols, redis-two-processes, real-laravel]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Record honest automatic acceptance result
-        env:
-          PROTOCOL_RESULT: ${{ needs.real-protocols.result }}
-          REDIS_RESULT: ${{ needs.redis-two-processes.result }}
-          LARAVEL_RESULT: ${{ needs.real-laravel.result }}
-        shell: bash
-        run: |
-          set -eu
-          {
-            echo '# v1.0.5 automatic isolated acceptance'
-            echo
-            echo "Commit: \`$GITHUB_SHA\`"
-            echo
-            echo "| Gate | Outcome |"
-            echo "| --- | --- |"
-            echo "| Real Xray/XUDP and QUIC revocation | $PROTOCOL_RESULT |"
-            echo "| Redis lease concurrency and node processes | $REDIS_RESULT |"
-            echo "| Real isolated Laravel HTTP + Redis | $LARAVEL_RESULT |"
-            echo "| 24-hour dual-host production-equivalent soak | NOT RUN |"
-            echo "| Live authenticated systemd failure/rollback in staging | NOT RUN |"
-            echo
-            echo 'CI does not contact the production panel or node. A successful CI run is **not** a release approval.'
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PROTOCOL_RESULT" = success
-          test "$REDIS_RESULT" = success
-          test "$LARAVEL_RESULT" = success
-
-          } 2>&1 | tee acceptance-evidence/redis-two-processes.log
-      - name: Upload Redis lease evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-redis-two-processes-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  real-laravel:
-    name: Real isolated Laravel HTTP + Redis + two node processes
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-    env:
-      APP_ENV: testing
-      APP_DEBUG: 'false'
-      LOG_CHANNEL: stderr
-      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
-      CACHE_STORE: array
-      CACHE_DRIVER: array
-      SESSION_DRIVER: array
-      QUEUE_CONNECTION: sync
-      REDIS_CLIENT: phpredis
-      REDIS_HOST: 127.0.0.1
-      REDIS_PORT: '6379'
-      REDIS_PASSWORD: ''
-      REDIS_PREFIX: ''
-      DB_CONNECTION: sqlite
-      DB_DATABASE: ../v105-stage.sqlite
-      GLOBAL_DEVICE_ADMISSION_ENABLED: 'true'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: dockerps13/Xboard
-          ref: feature/global-device-admission-v105
-          path: xboard
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          extensions: redis, pdo_sqlite, mbstring, xml, curl, zip, bcmath
-          coverage: none
-      - name: Install and initialize isolated Laravel
-        run: |
-          composer install --working-dir=xboard --no-interaction --prefer-dist --no-progress --no-scripts
-          touch "$GITHUB_WORKSPACE/v105-stage.sqlite"
-          php xboard/tests/global-device-stage-bootstrap.php
-          sudo apt-get update -qq && sudo apt-get install -y redis-tools
-      - name: Start isolated Laravel HTTP
-        run: |
-          php -S 127.0.0.1:8765 -t xboard/public xboard/public/index.php > /tmp/v105-auto-panel.log 2>&1 &
-          echo $! > /tmp/v105-auto-panel.pid
-          for i in $(seq 1 30); do
-            status="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Accept: application/json' http://127.0.0.1:8765/api/v2/server/device-lease || true)"
-            if [ "$status" != "000" ]; then exit 0; fi
-            sleep 1
-          done
-          exit 1
-      - name: Authenticated two-node HTTP/Redis lease acceptance
-        shell: bash
-        env:
-          GLOBAL_ADMISSION_REDIS_INTEGRATION: '1'
-          GLOBAL_ADMISSION_REAL_PANEL_URL: http://127.0.0.1:8765
-        run: |
-          set -euo pipefail
-          mkdir -p acceptance-evidence
-          {
-            echo "Candidate commit: $GITHUB_SHA"
-            response="$(curl -sS -w '\nHTTP_CODE:%{http_code}' -X POST http://127.0.0.1:8765/api/v2/server/device-lease -H 'Content-Type: application/json' -H 'Accept: application/json' --data '{"machine_id":101,"node_id":11,"token":"secret-a","action":"acquire","user_id":7,"lease_id":"stage-auto-000001","ip":"192.0.2.100"}')"
-            echo "$response" | grep -F '"allowed":true'
-            redis-cli -h 127.0.0.1 -p 6379 DEL 'global_device_admission:v1:user:7'
-            go test -race -count=1 -timeout=120s -v ./internal/globaladmission -run '^TestTwoIndependentNodeProcesses$'
-          } 2>&1 | tee acceptance-evidence/real-laravel.log
-      - name: Stop isolated PHP server
-        if: always()
-        run: |
-          if [ -f /tmp/v105-auto-panel.pid ]; then kill "$(cat /tmp/v105-auto-panel.pid)" 2>/dev/null || true; fi
-      - name: Upload Laravel/Redis evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: v105-automatic-laravel-${{ github.run_id }}
-          path: acceptance-evidence/
-          if-no-files-found: warn
-
-  acceptance-report:
-    name: Publish CI scope and result summary
-    needs: [real-protocols, redis-two-processes, real-laravel]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Record honest automatic acceptance result
-        env:
-          PROTOCOL_RESULT: ${{ needs.real-protocols.result }}
-          REDIS_RESULT: ${{ needs.redis-two-processes.result }}
-          LARAVEL_RESULT: ${{ needs.real-laravel.result }}
-        shell: bash
-        run: |
-          set -eu
-          {
-            echo '# v1.0.5 automatic isolated acceptance'
-            echo
-            echo "Commit: \`$GITHUB_SHA\`"
-            echo
-            echo "| Gate | Outcome |"
-            echo "| --- | --- |"
-            echo "| Real Xray/XUDP and QUIC revocation | $PROTOCOL_RESULT |"
-            echo "| Redis lease concurrency and node processes | $REDIS_RESULT |"
-            echo "| Real isolated Laravel HTTP + Redis | $LARAVEL_RESULT |"
-            echo "| 24-hour dual-host production-equivalent soak | NOT RUN |"
-            echo "| Live authenticated systemd failure/rollback in staging | NOT RUN |"
-            echo
-            echo 'CI does not contact the production panel or node. A successful CI run is **not** a release approval.'
-          } >> "$GITHUB_STEP_SUMMARY"
-          test "$PROTOCOL_RESULT" = success
-          test "$REDIS_RESULT" = success
-          test "$LARAVEL_RESULT" = success
+          echo '## Automatic isolated acceptance' >> "$GITHUB_STEP_SUMMARY"
+          echo "Candidate: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "Protocol: $PROTOCOL; Redis: $REDIS; Laravel: $LARAVEL" >> "$GITHUB_STEP_SUMMARY"
+          echo '24h real staging dual-node soak: NOT RUN' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Live staging systemd fault injection: NOT RUN' >> "$GITHUB_STEP_SUMMARY"
+          test "$PROTOCOL" = success && test "$REDIS" = success && test "$LARAVEL" = success
