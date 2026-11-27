@@ -112,14 +112,23 @@ func TestRealXrayMuxTCPRevocation(t *testing.T) {
     if _, err := io.ReadFull(response.Body, head); err != nil || string(head) != "stream-start\n" {
         t.Fatalf("persistent MUX stream did not transfer initial data: %q err=%v",head,err)
     }
-    var revoke func()
-    select {
-    case revoke = <-revocations:
-    case <-time.After(3 * time.Second):
+    // Each multiplexed stream may have its own lease callback. A global
+    // lease loss notifies every registered link, including the long-lived one.
+    callbacks := make([]func(), 0, 16)
+    collectDeadline := time.NewTimer(500 * time.Millisecond)
+collect:
+    for {
+        select {
+        case callback := <-revocations:
+            callbacks = append(callbacks, callback)
+        case <-collectDeadline.C:
+            break collect
+        }
+    }
+    if len(callbacks) == 0 {
         t.Fatal("Xray strict global admission callback did not run")
     }
-    // The callback must interrupt a live transport link after lease loss.
-    revoke()
+    for _, revoke := range callbacks { revoke() }
     done := make(chan error, 1)
     go func() {
         _, err := io.Copy(io.Discard, response.Body)
