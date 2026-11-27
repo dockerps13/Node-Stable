@@ -52,10 +52,23 @@ for old, new in patches:
         raise RuntimeError("unexpected upstream source for patch anchor: %r" % old)
     patched = patched.replace(old, new, 1)
 target.write_text(patched)
+# PacketReader's r.dest points at the reusable MUX FrameMetadata.Target.
+# Give each asynchronously dispatched UDP buffer an owned destination copy.
+reader = dst / "common/mux/reader.go"
+reader.chmod(reader.stat().st_mode | 0o200)
+original_reader = reader.read_text()
+old_reader = "\t\tb.UDP = r.dest\n"
+new_reader = "\t\t// The MUX frame metadata is reused on the next frame.\n\t\t// Keep an independent destination for this dispatched buffer.\n\t\tdestination := *r.dest\n\t\tb.UDP = &destination\n"
+if original_reader.count(old_reader) != 1:
+    raise RuntimeError("unexpected Xray MUX PacketReader destination anchor")
+patched_reader = original_reader.replace(old_reader, new_reader, 1)
+reader.write_text(patched_reader)
 (dst / "xray-udp-patch-provenance.json").write_text(json.dumps({
     "upstream": replacement["Path"],
     "version": replacement.get("Version"),
-    "patch": "UDP dispatcher connEntry.closed atomic Bool + Swap + Load",
+    "patch": "UDP dispatcher connEntry.closed atomic Bool plus owned MUX UDP packet destination",
+    "mux_reader_original_sha256": __import__("hashlib").sha256(original_reader.encode()).hexdigest(),
+    "mux_reader_patched_sha256": __import__("hashlib").sha256(patched_reader.encode()).hexdigest(),
     "source_sha256": __import__("hashlib").sha256(original.encode()).hexdigest(),
     "patched_sha256": __import__("hashlib").sha256(patched.encode()).hexdigest(),
     "scope": "test-only; repository Go module replacement not persisted",
