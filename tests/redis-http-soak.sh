@@ -36,7 +36,7 @@ while (( $(date +%s) < deadline )); do
   printf '%d,%d,PASS\n' "$cycle" "$(( $(date +%s) - cycle_start ))" >> "$outdir/http-redis-cycles.csv"
   python3 tests/redis-lease-benchmark.py --duration 5 --workers 12 --cardinalities 32,256 \
     --output "$outdir/lease-cycle-${cycle}.json" > "$outdir/lease-cycle-${cycle}.log"
-  info="$(redis-cli -h 127.0.0.1 -p 6379 info memory stats clients | tr -d '\r')"
+  info="$(redis-cli -h 127.0.0.1 -p 6379 info | tr -d '\r')"
   field() { printf '%s\n' "$info" | awk -F: -v key="$1" '$1 == key {print $2; exit}'; }
   printf '%s,%d,%s,%s,%s,%s,%s\n' "$(date -u +%FT%TZ)" "$cycle" \
     "$(field used_memory)" "$(field used_memory_peak)" "$(field connected_clients)" \
