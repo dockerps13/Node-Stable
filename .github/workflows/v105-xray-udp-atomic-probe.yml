@@ -1,0 +1,48 @@
+name: v1.0.5 Xray upstream UDP race fix isolated probe
+
+on:
+  pull_request:
+    paths:
+      - 'tests/probe-xray-udp-atomic.sh'
+      - '.github/workflows/v105-xray-udp-atomic-probe.yml'
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - 'tests/probe-xray-udp-atomic.sh'
+      - '.github/workflows/v105-xray-udp-atomic-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xray-udp-atomic-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Materialize isolated Xray UDP atomic overlay
+        run: bash tests/probe-xray-udp-atomic.sh "$RUNNER_TEMP/xray-udp-patch"
+      - name: Verify real VLESS XUDP revocation under Go race detector
+        run: go test -race -count=20 -timeout=12m -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
+      - name: Verify real VLESS MUX TCP revocation with patched Xray module
+        run: go test -race -count=5 -timeout=8m -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
+      - name: Compile candidate binary with the same source overlay
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" -o "$RUNNER_TEMP/xboard-node-xray-overlay" ./cmd/xboard-node
+          "$RUNNER_TEMP/xboard-node-xray-overlay" -v
+      - name: Upload source patch provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-xray-udp-overlay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/xray-udp-patch/provenance.json
+            ${{ runner.temp }}/xray-udp-patch/dispatcher.go
+            ${{ runner.temp }}/xray-udp-patch/xray-overlay.json
+          if-no-files-found: warn
