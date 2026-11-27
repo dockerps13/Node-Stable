@@ -1,4 +1,4 @@
-name: v1.0.5 staging binary artifact (not a release)
+name: v1.0.5 staging binary artifact
 
 on:
   push:
