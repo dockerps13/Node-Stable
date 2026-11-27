@@ -18,6 +18,7 @@ func TestStrictXrayConcurrentLeaseRevocationLifecycle(t *testing.T) {
     d := newTestDispatcher()
     d.UpdateLimits(map[string]int{"user@7": 7}, map[string]int{"user@7": 2}, nil)
 
+    var callbacks sync.Map
     var acquisitions atomic.Int64
     var revocations atomic.Int64
     var releases atomic.Int64
@@ -26,6 +27,7 @@ func TestStrictXrayConcurrentLeaseRevocationLifecycle(t *testing.T) {
             return nil, false
         }
         acquisitions.Add(1)
+        callbacks.Store(ip, revoke)
         var once sync.Once
         return func() {
             once.Do(func() { releases.Add(1) })
@@ -39,21 +41,20 @@ func TestStrictXrayConcurrentLeaseRevocationLifecycle(t *testing.T) {
         go func(id int) {
             defer wg.Done()
             for i := 0; i < rounds; i++ {
-                var revokeFn func()
-                // Install callback for a single connection and exercise
-                // revoke/release concurrently. Each callback is independent.
-                // The authority callback above is shared across goroutines.
-                release, ok := d.reserveMachineSlot("user@7", fmt.Sprintf("198.18.%d.%d", id/250, id%250+1), func() {
+                ip := fmt.Sprintf("198.18.%d.%d", id/250, id%250+1)
+                release, ok := d.reserveMachineSlot("user@7", ip, func() {
                     revocations.Add(1)
                 })
                 if !ok || release == nil {
                     failures <- "strict authority rejected an expected grant"
                     return
                 }
-                // A strict authority can call the supplied revoke closure
-                // at any time. Here the callback is simulated by invoking
-                // the same revoke signal while release runs.
-                revokeFn = func() { revocations.Add(1) }
+                stored, found := callbacks.LoadAndDelete(ip)
+                if !found {
+                    failures <- "strict authority did not retain revoke callback"
+                    return
+                }
+                revokeFn := stored.(func())
                 var concurrent sync.WaitGroup
                 concurrent.Add(2)
                 go func() { defer concurrent.Done(); revokeFn() }()
