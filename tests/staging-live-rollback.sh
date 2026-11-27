@@ -39,17 +39,47 @@ sha256sum "$saved" > "$stage/original.sha256"
 printf 'unit=%s\nstarted_utc=%s\ncandidate_sha256=%s\n' "$unit" "$(date -u +%FT%TZ)" "$(sha256sum "$candidate" | awk '{print $1}')" > "$stage/evidence.txt"
 
 restore() {
-  # Always restore original on exit. Never leave the injected fault installed.
+  original_exit="$1"
+  trap - EXIT
   set +e
   sudo -n install -m 755 "$saved" "$bin.rollback"
-  sudo -n mv -f "$bin.rollback" "$bin"
+  install_rc=$?
+  if (( install_rc == 0 )); then
+    sudo -n mv -f "$bin.rollback" "$bin"
+    install_rc=$?
+  fi
   sudo -n systemctl reset-failed "$unit"
   sudo -n systemctl restart "$unit"
+  restart_rc=$?
   cmp -s "$bin" "$saved"
-  ok=$?
-  printf 'rollback_utc=%s\nrollback_binary_match=%s\n' "$(date -u +%FT%TZ)" "$([ "$ok" -eq 0 ] && echo true || echo false)" >> "$stage/evidence.txt"
+  cmp_rc=$?
+  systemctl is-active --quiet "$unit"
+  active_rc=$?
+  check_rc=0
+  if (( restart_rc == 0 && active_rc == 0 )); then
+    timeout 20 "$STAGING_HEALTH_PROBE" >/dev/null && \
+    timeout 30 "$STAGING_ADMISSION_PROBE" >/dev/null && \
+    timeout 30 "$STAGING_TRAFFIC_PROBE" >/dev/null || check_rc=1
+  else
+    check_rc=1
+  fi
+  printf 'rollback_utc=%s\\nrollback_binary_match=%s\\nrollback_service_restart=%s\\nrollback_probe_result=%s\\n' \
+    "$(date -u +%FT%TZ)" "$([ "$cmp_rc" -eq 0 ] && echo true || echo false)" \
+    "$([ "$restart_rc" -eq 0 ] && echo PASS || echo FAIL)" \
+    "$([ "$check_rc" -eq 0 ] && echo PASS || echo FAIL)" >> "$stage/evidence.txt"
+  (cd "$stage" && sha256sum original-xboard-node evidence.txt > SHA256SUMS)
+  if (( install_rc != 0 || restart_rc != 0 || cmp_rc != 0 || active_rc != 0 || check_rc != 0 )); then
+    echo "FAIL: baseline recovery incomplete; inspect dedicated staging host" >&2
+    exit 1
+  fi
+  if (( original_exit != 0 )); then
+    echo "FAIL: exercise failed; baseline restored" >&2
+    exit "$original_exit"
+  fi
+  echo "PASS: baseline binary restored; live staging service, admission and protocol traffic recovered"
+  exit 0
 }
-trap restore EXIT
+trap 'restore "$?"' EXIT
 
 check() {
   phase="$1"
