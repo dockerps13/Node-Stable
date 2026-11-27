@@ -26,23 +26,22 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Materialize isolated Xray UDP atomic overlay
-        run: bash tests/probe-xray-udp-atomic.sh "$RUNNER_TEMP/xray-udp-patch"
+      - name: Materialize isolated writable Xray module and apply atomic fix
+        run: bash tests/probe-xray-udp-atomic.sh "$RUNNER_TEMP/xray-core-local"
       - name: Verify real VLESS XUDP revocation under Go race detector
-        run: go test -race -count=20 -timeout=12m -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
+        run: go test -race -count=20 -timeout=12m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
       - name: Verify real VLESS MUX TCP revocation with patched Xray module
-        run: go test -race -count=5 -timeout=8m -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
-      - name: Compile candidate binary with the same source overlay
+        run: go test -race -count=5 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
+      - name: Compile candidate binary with the same patched local module
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -overlay="$RUNNER_TEMP/xray-udp-patch/xray-overlay.json" -o "$RUNNER_TEMP/xboard-node-xray-overlay" ./cmd/xboard-node
-          "$RUNNER_TEMP/xboard-node-xray-overlay" -v
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xboard-node-xray-overlay" ./cmd/xboard-node
+          "$RUNNER_TEMP/xboard-node-xray-patched" -v
       - name: Upload source patch provenance
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v105-xray-udp-overlay-${{ github.run_id }}-${{ github.run_attempt }}
+          name: v105-xray-udp-local-patch-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/xray-udp-patch/provenance.json
-            ${{ runner.temp }}/xray-udp-patch/dispatcher.go
-            ${{ runner.temp }}/xray-udp-patch/xray-overlay.json
+            ${{ runner.temp }}/xray-core-local/xray-udp-patch-provenance.json
+            ${{ runner.temp }}/xray-core-local/transport/internet/udp/dispatcher.go
           if-no-files-found: warn
