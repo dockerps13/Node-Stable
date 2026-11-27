@@ -1,62 +1,66 @@
 #!/usr/bin/env bash
-# Test-only Go source overlay for the cedar2025/Xray-core UDP dispatcher race.
-# Does not mutate go.mod, the module cache, or installed binaries.
+# Isolated, writable Go module copy for testing the upstream Xray UDP fix.
+# Only this CI checkout's go.mod is changed. Production dependency stays pinned.
 set -euo pipefail
 dst="${1:?provide an unused output directory}"
-if [[ -e "$dst" ]]; then echo "destination exists" >&2; exit 2; fi
-mkdir -m 700 -p "$dst"
+if [[ -e "$dst" ]]; then echo "destination exists: $dst" >&2; exit 2; fi
+
 module_json="$(go list -m -json github.com/xtls/xray-core)"
-export XRAY_MODULE_JSON="$module_json" XRAY_OVERLAY_DST="$(realpath "$dst")"
+export XRAY_MODULE_JSON="$module_json" XRAY_PATCH_DST="$dst"
 python3 - <<'PY'
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
-m = json.loads(os.environ["XRAY_MODULE_JSON"])
-replacement = m.get("Replace", {})
+module = json.loads(os.environ["XRAY_MODULE_JSON"])
+replacement = module.get("Replace", {})
 if replacement.get("Path") != "github.com/cedar2025/Xray-core":
-    raise RuntimeError("unexpected Xray-core module replacement: %r" % replacement)
-if not replacement.get("Dir"):
+    raise RuntimeError("unexpected Xray replacement: %r" % replacement)
+
+src = replacement.get("Dir")
+if not src:
     version = replacement.get("Version")
     if not version:
-        raise RuntimeError("Xray replacement lacks version and local directory")
-    result = subprocess.check_output(
-        ["go", "mod", "download", "-json", replacement["Path"]+"@"+version],
+        raise RuntimeError("Xray replacement version missing")
+    output = subprocess.check_output(
+        ["go", "mod", "download", "-json", replacement["Path"] + "@" + version],
         text=True,
     )
-    source_dir = Path(json.loads(result)["Dir"])
-else:
-    source_dir = Path(replacement["Dir"])
-source = source_dir / "transport/internet/udp/dispatcher.go"
-original = source.read_text()
-if "sync/atomic" in original:
-    raise RuntimeError("Xray source may already be fixed; review patch before reuse")
+    src = json.loads(output)["Dir"]
+dst = Path(os.environ["XRAY_PATCH_DST"]).resolve()
+shutil.copytree(Path(src), dst)
+target = dst / "transport/internet/udp/dispatcher.go"
+target.chmod(target.stat().st_mode | 0o200)
+original = target.read_text()
+if '"sync/atomic"' in original:
+    raise RuntimeError("already patched: re-audit source before continuing")
 patches = [
     ('\t"sync"\n', '\t"sync"\n\t"sync/atomic"\n'),
     ('\tclosed bool\n', '\tclosed atomic.Bool\n'),
-    ('if c.closed {\n\t\tpanic("terminate called more than once")', 'if c.closed.Swap(true) {\n\t\tpanic("terminate called more than once")'),
+    ('if c.closed {\n\t\tpanic("terminate called more than once")',
+     'if c.closed.Swap(true) {\n\t\tpanic("terminate called more than once")'),
     ('\tc.closed = true\n\tc.cancel()', '\tc.cancel()'),
     ('if v.conn.closed {', 'if v.conn.closed.Load() {'),
 ]
 patched = original
 for old, new in patches:
-    occurrences = patched.count(old)
-    if occurrences != 1:
-        raise RuntimeError("Xray UDP source mismatch (%d occurrences): %r" % (occurrences, old))
+    if patched.count(old) != 1:
+        raise RuntimeError("unexpected upstream source for patch anchor: %r" % old)
     patched = patched.replace(old, new, 1)
-dst = Path(os.environ["XRAY_OVERLAY_DST"])
-patched_path = dst / "dispatcher.go"
-patched_path.write_text(patched)
-overlay_path = dst / "xray-overlay.json"
-overlay_path.write_text(json.dumps({"Replace": {str(source): str(patched_path)}}, indent=2) + "\n")
-(dst / "provenance.json").write_text(json.dumps({
-    "module": m["Path"],
-    "replacement_path": replacement["Path"],
-    "replacement_version": replacement.get("Version"),
-    "original_source": str(source),
-    "changes": ["connEntry.closed bool -> atomic.Bool",
-                "terminate Swap(true)", "getInboundRay Load()"]
-}, indent=2)+"\n")
-print("Isolated Xray UDP overlay prepared:", overlay_path)
+target.write_text(patched)
+(dst / "xray-udp-patch-provenance.json").write_text(json.dumps({
+    "upstream": replacement["Path"],
+    "version": replacement.get("Version"),
+    "patch": "UDP dispatcher connEntry.closed atomic Bool + Swap + Load",
+    "source_sha256": __import__("hashlib").sha256(original.encode()).hexdigest(),
+    "patched_sha256": __import__("hashlib").sha256(patched.encode()).hexdigest(),
+    "scope": "test-only; repository Go module replacement not persisted",
+}, indent=2) + "\n")
+print("Patched test-only Xray module:", dst)
 PY
+# Change only the ephemeral CI working tree's Go module resolution.
+go mod edit "-replace=github.com/xtls/xray-core=$(realpath "$dst")"
+go mod tidy
+go list -m -json github.com/xtls/xray-core | grep -F "$(realpath "$dst")"
