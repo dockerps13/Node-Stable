@@ -1,0 +1,63 @@
+name: v1.0.5 staging binary artifact (not a release)
+
+on:
+  push:
+    branches:
+      - feature/global-device-admission-v105
+    paths:
+      - '.github/workflows/v105-staging-binary.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'third_party/**'
+      - 'Makefile'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact candidate commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify patched Xray is present in official module
+        run: |
+          grep -Fq 'replace github.com/xtls/xray-core => ./third_party/xray-core' go.mod
+          grep -Fq 'closed atomic.Bool' third_party/xray-core/transport/internet/udp/dispatcher.go
+          grep -Fq 'b.UDP = &destination' third_party/xray-core/common/mux/reader.go
+          go mod verify
+      - name: Build Linux amd64 staging binaries
+        run: make build-linux
+      - name: Verify binaries and create checksum manifest
+        run: |
+          set -euo pipefail
+          mkdir -p staging-package
+          install -m 755 xboard-node-linux-amd64 staging-package/xboard-node
+          install -m 755 xbctl-linux-amd64 staging-package/xbctl
+          staging-package/xboard-node -v | tee staging-package/VERSION.txt
+          staging-package/xbctl version | tee -a staging-package/VERSION.txt
+          printf '%s\n' "$GITHUB_SHA" > staging-package/COMMIT.txt
+          printf '%s\n' 'STAGING ONLY - NOT A FORMAL RELEASE. Do not replace production binaries.' > staging-package/README.txt
+          (cd staging-package && sha256sum xboard-node xbctl COMMIT.txt VERSION.txt README.txt > SHA256SUMS)
+          tar -czf "xboard-v105-staging-${GITHUB_SHA:0:12}-linux-amd64.tar.gz" -C staging-package .
+          sha256sum xboard-v105-staging-*-linux-amd64.tar.gz > staging-archive.sha256
+      - name: Upload verified staging binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: v105-staging-linux-amd64-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            xboard-v105-staging-*-linux-amd64.tar.gz
+            staging-archive.sha256
+          if-no-files-found: error
+          retention-days: 14
