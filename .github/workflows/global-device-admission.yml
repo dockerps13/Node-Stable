@@ -54,7 +54,7 @@ jobs:
       - name: Xray and sing-box revocation race regression
         run: go test -race -count=2 -timeout=8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray ./internal/kernel/singbox
       - name: Repeated concurrent Xray strict lease callback regression
-        run: go test -race -count=20 -timeout=5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray -run '^TestStrictXrayConcurrentLeaseRevocationLifecycle
+        run: go test -race -count=20 -timeout=5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/xray -run '^TestStrictXrayConcurrentLeaseRevocationLifecycle$'
       - name: Repeated real QUIC UDP revoke/reconnect race regression
         run: go test -race -count=12 -timeout=12m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestRealQUICUDPStrictGlobalAdmission$'
       - name: Install Redis CLI
