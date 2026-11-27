@@ -1,15 +1,19 @@
-name: v1.0.5 Xray upstream UDP race fix isolated probe
+name: v1.0.5 integrated Xray UDP MUX race acceptance
 
 on:
   pull_request:
     paths:
-      - 'tests/probe-xray-udp-atomic.sh'
+      - 'third_party/xray-core/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/v105-xray-udp-atomic-probe.yml'
   push:
     branches:
       - feature/global-device-admission-v105
     paths:
-      - 'tests/probe-xray-udp-atomic.sh'
+      - 'third_party/xray-core/**'
+      - 'go.mod'
+      - 'go.sum'
       - '.github/workflows/v105-xray-udp-atomic-probe.yml'
   workflow_dispatch:
 
@@ -17,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  xray-udp-atomic-probe:
+  xray-udp-integrated:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -26,22 +30,26 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Materialize isolated writable Xray module and apply atomic fix
-        run: bash tests/probe-xray-udp-atomic.sh "$RUNNER_TEMP/xray-core-local"
+      - name: Verify official Go builds resolve patched local Xray
+        run: |
+          grep -Fq 'replace github.com/xtls/xray-core => ./third_party/xray-core' go.mod
+          grep -Fq 'closed atomic.Bool' third_party/xray-core/transport/internet/udp/dispatcher.go
+          grep -Fq 'b.UDP = &destination' third_party/xray-core/common/mux/reader.go
+          go list -m -json github.com/xtls/xray-core | grep -F 'third_party/xray-core'
+          go mod verify
       - name: Verify real VLESS XUDP revocation under Go race detector
         run: go test -race -count=20 -timeout=12m -tags xray_xudp_e2e ./internal/kernel/xray -run '^TestRealXrayXUDPRoundTripAndRevocation$'
-      - name: Verify real VLESS MUX TCP revocation with patched Xray module
+      - name: Verify real VLESS MUX TCP revocation
         run: go test -race -count=5 -timeout=8m ./internal/kernel/xray -run '^TestRealXrayMuxTCPRevocation$'
-      - name: Compile candidate binary with the same patched local module
+      - name: Compile candidate binary with integrated Xray dependency
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xboard-node-xray-patched" ./cmd/xboard-node
-          "$RUNNER_TEMP/xboard-node-xray-patched" -v
-      - name: Upload source patch provenance
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$RUNNER_TEMP/xboard-node-xray-integrated" ./cmd/xboard-node
+          "$RUNNER_TEMP/xboard-node-xray-integrated" -v
+          sha256sum "$RUNNER_TEMP/xboard-node-xray-integrated" > integrated-xray-binary.sha256
+      - name: Upload integration evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v105-xray-udp-local-patch-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/xray-core-local/xray-udp-patch-provenance.json
-            ${{ runner.temp }}/xray-core-local/transport/internet/udp/dispatcher.go
+          name: v105-xray-integrated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: integrated-xray-binary.sha256
           if-no-files-found: warn
